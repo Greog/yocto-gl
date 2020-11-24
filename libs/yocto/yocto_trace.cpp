@@ -1222,10 +1222,76 @@ static float sample_lights_pdf(const trace_scene* scene, const trace_bvh* bvh,
   return pdf;
 }
 
-static vec4f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
-    const trace_lights* lights, const ray3f& ray_, rng_state& rng,
-    const trace_params& params) {
-  return {0, 0, 0, 1};
+static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
+    const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
+    trace_state* state, const trace_params& params) {
+  // initialize
+  auto& rng      = state->rngs[ij];
+  auto  ray      = ray_;
+  auto  hit      = !params.envhidden && !scene->environments.empty();
+  auto  radiance = zero3f;
+
+  // intersect next point
+  auto intersection = intersect_bvh(bvh, ray);
+  if (!intersection.hit) {
+    if (!params.envhidden) {
+      return eval_environment(scene, ray.d);
+    } else {
+      return zero3f;
+    }
+  }
+  hit = true;
+
+  // prepare shading point
+  auto outgoing = -ray.d;
+  auto instance = scene->instances[intersection.instance];
+  auto element  = intersection.element;
+  auto uv       = intersection.uv;
+  auto position = eval_position(instance, element, uv);
+  auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+  auto emission = eval_emission(instance, element, uv, normal, outgoing);
+  // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+  auto bsdf = eval_bsdf(instance, element, uv, normal, outgoing);
+
+  // accumulate emission
+  radiance += eval_emission(emission, normal, outgoing);
+
+  // handle delta
+  if (is_delta(bsdf)) return radiance;
+
+  // sample shadow ray direction
+  auto incoming = sample_lights(
+      scene, lights, position, rand1f(rng), rand1f(rng), rand2f(rng));
+
+  auto bsdfcos = eval_bsdfcos(bsdf, normal, outgoing, incoming);
+  auto pdf     = sample_lights_pdf(scene, bvh, lights, position, incoming);
+  auto weight  = bsdfcos / pdf;
+
+  // check weight
+  if (weight == zero3f || !isfinite(weight)) return radiance;
+
+  // shadow ray
+  auto shadow_ray          = ray3f{position, incoming};
+  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
+  if (!shadow_intersection.hit) {
+    if (params.envhidden) {
+      return radiance;
+    } else {
+      radiance += weight * eval_environment(scene, shadow_ray.d);
+    }
+  } else {
+    auto outgoing = -shadow_ray.d;
+    auto instance = scene->instances[shadow_intersection.instance];
+    auto element  = shadow_intersection.element;
+    auto uv       = shadow_intersection.uv;
+    // auto position = eval_position(instance, element, uv);
+    auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+    auto emission = eval_emission(instance, element, uv, normal, outgoing);
+    // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+    // auto bsdf     = eval_bsdf(instance, element, uv, normal, outgoing);
+    radiance += weight * eval_emission(emission, normal, outgoing);
+  }
+  return radiance;
 }
 
 // Recursive path tracing.
@@ -1706,7 +1772,7 @@ using sampler_func = vec4f (*)(const trace_scene* scene, const trace_bvh* bvh,
     const trace_params& params);
 static sampler_func get_trace_sampler_func(const trace_params& params) {
   switch (params.sampler) {
-    case trace_sampler_type::restir: return trace_restir;
+    case trace_sampler_type::restir: return {};
     case trace_sampler_type::path: return trace_path;
     case trace_sampler_type::naive: return trace_naive;
     case trace_sampler_type::eyelight: return trace_eyelight;
@@ -1743,7 +1809,14 @@ void trace_sample(trace_state* state, const trace_scene* scene,
   auto sampler = get_trace_sampler_func(params);
   auto ray     = sample_camera(camera, ij, state->render.imsize(),
       rand2f(state->rngs[ij]), rand2f(state->rngs[ij]), params.tentfilter);
-  auto sample  = sampler(scene, bvh, lights, ray, state->rngs[ij], params);
+  auto sample  = vec4f{};
+  if (params.sampler == trace_sampler_type::restir) {
+    auto s = trace_restir(scene, bvh, lights, ray, ij, state, params);
+    sample = {s.x, s.y, s.z, 1.0f};
+  } else {
+    sample = sampler(scene, bvh, lights, ray, state->rngs[ij], params);
+  }
+
   if (!isfinite(xyz(sample))) sample = {0, 0, 0, sample.w};
   if (max(sample) > params.clamp)
     sample = sample * (params.clamp / max(sample));
