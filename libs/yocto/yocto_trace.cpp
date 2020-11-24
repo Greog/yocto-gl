@@ -1222,6 +1222,12 @@ static float sample_lights_pdf(const trace_scene* scene, const trace_bvh* bvh,
   return pdf;
 }
 
+static vec4f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
+    const trace_lights* lights, const ray3f& ray_, rng_state& rng,
+    const trace_params& params) {
+  return {0, 0, 0, 1};
+}
+
 // Recursive path tracing.
 static vec4f trace_path(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, rng_state& rng,
@@ -1700,6 +1706,7 @@ using sampler_func = vec4f (*)(const trace_scene* scene, const trace_bvh* bvh,
     const trace_params& params);
 static sampler_func get_trace_sampler_func(const trace_params& params) {
   switch (params.sampler) {
+    case trace_sampler_type::restir: return trace_restir;
     case trace_sampler_type::path: return trace_path;
     case trace_sampler_type::naive: return trace_naive;
     case trace_sampler_type::eyelight: return trace_eyelight;

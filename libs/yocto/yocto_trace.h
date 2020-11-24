@@ -359,6 +359,7 @@ enum struct trace_bvh_type {
 
 // Type of tracing algorithm
 enum struct trace_sampler_type {
+  restir,      // reservoir resampling
   path,        // path tracing
   naive,       // naive path tracing
   eyelight,    // eyelight rendering
@@ -397,7 +398,7 @@ struct trace_params {
 };
 
 const auto trace_sampler_names = std::vector<std::string>{
-    "path", "naive", "eyelight", "falsecolor", "dalbedo", "dnormal"};
+    "restir", "path", "naive", "eyelight", "falsecolor", "dalbedo", "dnormal"};
 
 const auto trace_falsecolor_names = vector<string>{"position", "normal",
     "frontfacing", "gnormal", "gfrontfacing", "texcoord", "color", "emission",
