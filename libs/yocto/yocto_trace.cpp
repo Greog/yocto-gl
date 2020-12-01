@@ -1222,6 +1222,45 @@ static float sample_lights_pdf(const trace_scene* scene, const trace_bvh* bvh,
   return pdf;
 }
 
+// incoming, emission
+static pair<vec3f, vec3f> sample_lights_restir(
+    const trace_scene* scene, const trace_lights* lights, const vec3f& position,
+    float rl, float rel, const vec2f& ruv, const vec3f& outgoing) {
+  auto light_id = sample_uniform((int)lights->lights.size(), rl);
+  auto light    = lights->lights[light_id];
+  vec3f incoming;
+  vec3f emission;
+  if (light->instance != nullptr) {
+    auto instance = light->instance;
+    auto element  = sample_discrete_cdf(light->elements_cdf, rel);
+    auto uv       = (!instance->shape->triangles.empty()) ? sample_triangle(ruv)
+                                                    : ruv;
+    auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+    auto lposition = eval_position(light->instance, element, uv);
+    emission = eval_emission(
+      eval_emission(instance, element, uv, normal, outgoing), normal, outgoing);
+    incoming = normalize(lposition - position);
+  } else if (light->environment != nullptr) {
+    auto environment = light->environment;
+    if (environment->emission_tex != nullptr) {
+      auto emission_tex = environment->emission_tex;
+      auto idx          = sample_discrete_cdf(light->elements_cdf, rel);
+      auto size         = texture_size(emission_tex);
+      auto uv           = vec2f{
+          ((idx % size.x) + 0.5f) / size.x, ((idx / size.x) + 0.5f) / size.y};
+      incoming = transform_direction(environment->frame,
+          {cos(uv.x * 2 * pif) * sin(uv.y * pif), cos(uv.y * pif),
+              sin(uv.x * 2 * pif) * sin(uv.y * pif)});
+    } else {
+      incoming = sample_sphere(ruv);
+    }
+    emission = eval_environment(scene, incoming);
+  } else {
+    incoming = zero3f;
+  }
+  return {incoming, emission};
+}
+
 static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
     trace_state* state, const trace_params& params) {
@@ -1259,13 +1298,32 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   // handle delta
   if (is_delta(bsdf)) return radiance;
 
-  // sample shadow ray direction
-  auto incoming = sample_lights(
-      scene, lights, position, rand1f(rng), rand1f(rng), rand2f(rng));
+  // sample direct light
+  const int candidates_count = 16;
+  float weight_sum = 0.0f;
+  // reservoir of size 1 (= 1 sample)
+  vec3f sampled_incoming = zero3f;
+  vec3f sampled_emission = zero3f;
 
-  auto bsdfcos = eval_bsdfcos(bsdf, normal, outgoing, incoming);
-  auto pdf     = sample_lights_pdf(scene, bvh, lights, position, incoming);
-  auto weight  = bsdfcos / pdf;
+  for (int i = 1; i <= candidates_count; i++) {
+    auto [candidate_incoming, candidate_emission] = sample_lights_restir(
+        scene, lights, position, rand1f(rng), rand1f(rng), rand2f(rng),
+        outgoing);
+    float pdf = sample_lights_pdf(scene, bvh, lights, position, candidate_incoming);
+    vec3f bsdfcos = eval_bsdfcos(bsdf, normal, outgoing, candidate_incoming);
+    float candidate_weight = (max(bsdfcos * candidate_emission)) / pdf;
+    weight_sum += candidate_weight;
+    if (rand1f(rng) < (candidate_weight / weight_sum)) {
+      sampled_incoming = candidate_incoming;
+      sampled_emission = candidate_emission;
+    }
+  }
+
+  vec3f incoming = sampled_incoming;
+  vec3f bsdfcos = eval_bsdfcos(bsdf, normal, outgoing, incoming);
+  vec3f weight = bsdfcos * (
+      (1 / max(bsdfcos * sampled_emission)) * ((1.0f / candidates_count)
+       * weight_sum));
 
   // check weight
   if (weight == zero3f || !isfinite(weight)) return radiance;
