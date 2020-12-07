@@ -477,14 +477,35 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
 // Check is a sampler requires lights
 bool is_sampler_lit(const trace_params& params);
 
+struct restir_light_sample {
+  vec3f emission;
+  union {
+    vec3f position; // light instance
+    vec3f incoming; // environment
+  };
+  bool is_environment;
+};
+
+struct restir_reservoir {
+  uint64_t candidates_count = 0;
+  restir_light_sample lsample = {};
+  float weight = 0.0f;
+  vec3f position = {};
+  vec3f normal = {};
+  vec3f outgoing = {};
+  trace_bsdf bsdf = {};
+  bool is_valid = false;
+};
+
 // [experimental] Asynchronous state
 struct trace_state {
-  image<vec4f>     render       = {};
-  image<vec4f>     accumulation = {};
-  image<int>       samples      = {};
-  image<rng_state> rngs         = {};
-  future<void>     worker       = {};  // async
-  atomic<bool>     stop         = {};  // async
+  image<vec4f>     render            = {};
+  image<vec4f>     accumulation      = {};
+  image<int>       samples           = {};
+  image<rng_state> rngs              = {};
+  image<restir_reservoir> reservoirs = {};
+  future<void>     worker            = {};  // async
+  atomic<bool>     stop              = {};  // async
 };
 
 // [experimental] Callback used to report partially computed image
