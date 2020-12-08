@@ -176,6 +176,105 @@ static vec3f restir_combine_reservoirs(restir_reservoir* output,
   return bsdfcos;
 }
 
+float geometric_term(
+    const vec3f& position, const light_point& point, const vec3f& incoming) {
+  return abs(dot(point.normal, -incoming)) /
+         distance_squared(position, point.position);
+}
+
+static vec3f f_trace_restir(const trace_scene* scene, const trace_bvh* bvh,
+    const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
+    trace_state* state, const trace_params& params) {
+  // initialize
+  auto& rng      = state->rngs[ij];
+  auto  ray      = ray_;
+  auto  hit      = !params.envhidden && !scene->environments.empty();
+  auto  radiance = zero3f;
+
+  // intersect next point
+  auto intersection = intersect_bvh(bvh, ray);
+  if (!intersection.hit) {
+    if (!params.envhidden) {
+      return eval_environment(scene, ray.d);
+    } else {
+      return zero3f;
+    }
+  }
+  hit = true;
+
+  // prepare shading point
+  auto outgoing = -ray.d;
+  auto instance = scene->instances[intersection.instance];
+  auto element  = intersection.element;
+  auto uv       = intersection.uv;
+  auto position = eval_position(instance, element, uv);
+  auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+  auto emission = eval_emission(instance, element, uv, normal, outgoing);
+  // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+  auto bsdf = eval_bsdf(instance, element, uv, normal, outgoing);
+
+  // accumulate emission
+  radiance += eval_emission(emission, normal, outgoing);
+
+  // handle delta
+  if (is_delta(bsdf)) return radiance;
+
+  // sample direct light
+  const int candidates_count = 16;
+  float     weight_sum       = 0.0f;
+  // reservoir of size 1 (= 1 sample)
+  vec3f sampled_incoming = zero3f;
+  vec3f sampled_emission = zero3f;
+  float gterm            = 1;
+
+  for (int i = 1; i <= candidates_count; i++) {
+    auto [candidate_point, pdf] = sample_area_lights(
+        scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
+    auto candidate_incoming = normalize(candidate_point.position - position);
+    // float pdf                                     = sample_lights_pdf(
+    // scene, bvh, lights, position, candidate_incoming);
+    vec3f bsdfcos = eval_bsdfcos(bsdf, normal, outgoing, candidate_incoming);
+    float candidate_weight = (max(bsdfcos * candidate_point.emission)) / pdf;
+    weight_sum += candidate_weight;
+    if (rand1f(rng) < (candidate_weight / weight_sum)) {
+      sampled_incoming = candidate_incoming;
+      sampled_emission = candidate_point.emission;
+      gterm = geometric_term(position, candidate_point, candidate_incoming);
+    }
+  }
+
+  vec3f incoming = sampled_incoming;
+  vec3f bsdfcos  = eval_bsdfcos(bsdf, normal, outgoing, incoming);
+  vec3f weight   = bsdfcos * ((1 / max(bsdfcos * sampled_emission)) *
+                               ((1.0f / candidates_count) * weight_sum));
+  weight *= gterm;
+  // check weight
+  if (weight == zero3f || !isfinite(weight)) return radiance;
+
+  // shadow ray
+  auto shadow_ray          = ray3f{position, incoming};
+  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
+  if (!shadow_intersection.hit) {
+    if (params.envhidden) {
+      return radiance;
+    } else {
+      radiance += weight * eval_environment(scene, shadow_ray.d);
+    }
+  } else {
+    auto outgoing = -shadow_ray.d;
+    auto instance = scene->instances[shadow_intersection.instance];
+    auto element  = shadow_intersection.element;
+    auto uv       = shadow_intersection.uv;
+    // auto position = eval_position(instance, element, uv);
+    auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+    auto emission = eval_emission(instance, element, uv, normal, outgoing);
+    // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+    // auto bsdf     = eval_bsdf(instance, element, uv, normal, outgoing);
+    radiance += weight * eval_emission(emission, normal, outgoing);
+  }
+  return radiance;
+}
+
 static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
     trace_state* state, const trace_params& params) {
@@ -216,36 +315,34 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   // curr_reservoir.bsdf             = point.bsdf;
   // curr_reservoir.is_valid         = true;
 
-  vec3f       integrand;
   light_point light_point = {};
+  vec3f       bsdfcos     = {};
+  float       gterm       = 1;
+  float       w_sum       = 0.0f;
 
-  // generate initial candidates
-
-  float w_sum = 0.0f;
   for (int i = 0; i < params.restir_candidates; i++) {
     auto [sample, p] = sample_area_lights(
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
 
     vec3f incoming = normalize(sample.position - point.position);
-    auto  gterm    = abs(dot(sample.normal, -incoming)) /
-                 distance_squared(point.position, sample.position);
-    vec3f bsdfcos = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float p_hat   = max(bsdfcos * gterm * sample.emission);
+    // abs(dot(sample.normal, -incoming)) /
+    // distance_squared(point.position, sample.position);
+    vec3f _bsdfcos = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
+    float p_hat    = max(_bsdfcos * sample.emission);
 
     float w = p_hat / p;
     w_sum += w;
 
     if (rand1f(rng) < (w / w_sum)) {
       light_point = sample;
-      integrand   = bsdfcos * gterm * sample.emission;
+      gterm       = geometric_term(point.position, sample, incoming);
+      bsdfcos     = _bsdfcos * sample.emission;
     }
   }
-  if (integrand == zero3f) return radiance;
+  if (bsdfcos == zero3f) return radiance;
 
-  vec3f f     = integrand;
-  float p_hat = max(integrand);
-
-  vec3f weight = f / p_hat;
+  vec3f weight = bsdfcos * gterm;
+  weight /= max(bsdfcos * light_point.emission);
   weight *= w_sum / params.restir_candidates;
 
 #if 0
@@ -265,7 +362,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     return radiance;
   }
 
-  radiance += integrand;
+  radiance += weight * light_point.emission;
 
   return radiance;
 }
