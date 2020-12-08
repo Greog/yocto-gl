@@ -275,6 +275,39 @@ static vec3f f_trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   return radiance;
 }
 
+pair<light_point, vec3f> sample_lights_reservoir(const shading_point& point,
+    const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
+    rng_state& rng, int num_candidates) {
+  light_point light_point = {};
+  vec3f       result      = zero3f;
+  float       w_sum       = 0.0f;
+
+  for (int i = 0; i < num_candidates; i++) {
+    auto [sample, p] = sample_area_lights(
+        scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
+
+    vec3f incoming  = normalize(sample.position - point.position);
+    vec3f integrand = sample.emission;
+    integrand *= eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
+    integrand *= geometric_term(point.position, sample, incoming);
+
+    float w = max(integrand) / p;
+    w_sum += w;
+
+    if (rand1f(rng) < (w / w_sum)) {
+      light_point = sample;
+      result      = integrand;
+    }
+  }
+
+  if (result != zero3f) {
+    result /= max(result);  // divide by p_hat
+    result *= w_sum / num_candidates;
+  }
+
+  return {light_point, result};
+}
+
 static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
     trace_state* state, const trace_params& params) {
@@ -305,47 +338,14 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   // handle delta
   if (is_delta(point.bsdf)) return point.emission;
 
-  light_point light_point = {};
-  vec3f       integrand   = zero3f;
-  float       w_sum       = 0.0f;
-
-  for (int i = 0; i < params.restir_candidates; i++) {
-    auto [sample, p] = sample_area_lights(
-        scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
-
-    vec3f incoming = normalize(sample.position - point.position);
-    vec3f integr   = sample.emission;
-    integr *= eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    integr *= geometric_term(point.position, sample, incoming);
-
-    float w = max(integr) / p;
-    w_sum += w;
-
-    if (rand1f(rng) < (w / w_sum)) {
-      light_point = sample;
-      integrand   = integr;
-    }
-  }
-  if (integrand == zero3f) return point.emission;
-
-  integrand /= max(integrand);  // divide by p_hat
-  integrand *= w_sum / params.restir_candidates;
-
-#if 0
-  // temporal reuse
-  restir_reservoir* reservoir = &state->reservoirs[ij];
-  if (!reservoir->is_valid) {
-    (*reservoir) = curr_reservoir;
-  } else {
-    restir_reservoir  prev_reservoir = *reservoir;
-    restir_reservoir* reservoirs[2]  = {&curr_reservoir, &prev_reservoir};
-    bsdfcos = restir_combine_reservoirs(reservoir, reservoirs, 2, rng);
-  }
-#endif
+  auto [light_point, integrand] = sample_lights_reservoir(
+      point, outgoing, scene, lights, rng, params.restir_candidates);
 
   // check visibility
-  if (!is_point_visible(point.position, light_point.position, scene, bvh)) {
-    return point.emission;
+  if (integrand != zero3f) {
+    if (!is_point_visible(point.position, light_point.position, scene, bvh)) {
+      return point.emission;
+    }
   }
 
   return point.emission + integrand;
