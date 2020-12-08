@@ -1368,6 +1368,25 @@ static vec3f restir_combine_reservoirs(restir_reservoir* output,
   return bsdfcos;
 }
 
+static bool is_point_visible(const vec3f& position, const vec3f& point,
+    const trace_scene* scene, const trace_bvh* bvh, float threshold = 0.001) {
+  auto incoming            = normalize(point - position);
+  auto shadow_ray          = ray3f{position, incoming};
+  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
+  if (!shadow_intersection.hit) {
+    printf("[warning] Shadow ray hitting nothing!\n");
+    return false;
+  }
+
+  auto instance = scene->instances[shadow_intersection.instance];
+  auto element  = shadow_intersection.element;
+  auto uv       = shadow_intersection.uv;
+  if (length(point - eval_position(instance, element, uv)) < threshold) {
+    return true;
+  }
+  return false;
+}
+
 static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
     trace_state* state, const trace_params& params) {
@@ -1531,8 +1550,7 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
   auto shadow_ray          = ray3f{position, incoming};
   auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
 
-  if (!shadow_intersection.hit) {
-    printf("[warning] Shadow ray hitting nothing!\n");
+  if (!is_point_visible(position, lposition, scene, bvh)) {
     return {radiance.x, radiance.y, radiance.z, 1};
   }
   // if (params.envhidden) {
