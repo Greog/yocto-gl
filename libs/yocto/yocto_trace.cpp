@@ -1543,7 +1543,7 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
   // prepare shading point
   auto outgoing = -ray.d;
   auto point    = make_shading_point(intersection, outgoing, scene);
- 
+
   // accumulate emission
   radiance += eval_emission(point.emission, point.normal, outgoing);
 
@@ -1573,25 +1573,15 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
   // } else {
   //   radiance += weight * eval_environment(scene, shadow_ray.d);
   // }
-  {
-    auto l_outgoing     = -shadow_ray.d;
-    auto l_instance     = scene->instances[shadow_intersection.instance];
-    auto l_element      = shadow_intersection.element;
-    auto l_uv           = shadow_intersection.uv;
-    auto isec_lposition = eval_position(l_instance, l_element, l_uv);
-    if (length(lposition - isec_lposition) > 0.001) {
-      return {radiance.x, radiance.y, radiance.z, 1};
-    }
 
-    auto l_normal = eval_shading_normal(
-        l_instance, l_element, l_uv, l_outgoing);
-    auto l_emission = eval_emission(
-        l_instance, l_element, l_uv, l_normal, l_outgoing);
-    auto geometric_term = abs(dot(l_normal, l_outgoing)) /
-                          distance_squared(point.position, lposition);
-    weight *= geometric_term;
-    radiance += weight * eval_emission(l_emission, l_normal, l_outgoing);
-  }
+  auto light_point = make_shading_point(
+      shadow_intersection, -shadow_ray.d, scene);
+
+  auto geometric_term = abs(dot(light_point.normal, -shadow_ray.d)) /
+                        distance_squared(point.position, light_point.position);
+  weight *= geometric_term;
+  radiance += weight * light_point.emission;
+
   return {radiance.x, radiance.y, radiance.z, 1};
 }
 
