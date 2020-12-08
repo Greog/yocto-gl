@@ -249,6 +249,8 @@ int main(int argc, const char* argv[]) {
   add_option(
       cli, "--resolution,-r", app->params.resolution, "Image resolution.");
   add_option(cli, "--samples,-s", app->params.samples, "Number of samples.");
+  add_option(cli, "--noparallel", app->params.noparallel,
+      "Disable parallel execution.");
   add_option(cli, "--tracer,-t", app->params.sampler, "Tracer type.",
       trace_sampler_names);
   add_option(cli, "--falsecolor,-F", app->params.falsecolor,
@@ -338,6 +340,7 @@ int main(int argc, const char* argv[]) {
     edited += draw_combobox(
         win, "false color", (int&)tparams.falsecolor, trace_falsecolor_names);
     edited += draw_slider(win, "nbounces", tparams.bounces, 1, 128);
+    edited += draw_checkbox(win, "no parallel", tparams.noparallel);
     edited += draw_checkbox(win, "envhidden", tparams.envhidden);
     continue_line(win);
     edited += draw_checkbox(win, "filter", tparams.tentfilter);

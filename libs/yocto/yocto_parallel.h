@@ -202,6 +202,15 @@ inline void parallel_for(T num1, T num2, Func&& func) {
   for (auto& f : futures) f.get();
 }
 
+template <typename T, typename Func>
+inline void serial_for(T num1, T num2, Func&& func) {
+  for (int i = 0; i < num2; i++) {
+    for (int k = 0; k < num1; k++) {
+      func(k, i);
+    }
+  }
+}
+
 // Simple parallel for used since our target platforms do not yet support
 // parallel algorithms. `Func` takes a reference to a `T`.
 template <typename T, typename Func>

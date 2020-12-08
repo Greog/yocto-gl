@@ -48,12 +48,6 @@
       "lookat": [-0.5, 1, 2, -0.05, 0.15, 0, 0, 1, 0]
     }
   },
-  "environments": {
-    "sky": {
-      "emission": [0.5, 0.5, 0.5],
-      "emission_tex": "sky"
-    }
-  },
   "instances": {
     "floor": {
       "shape": "floor",
