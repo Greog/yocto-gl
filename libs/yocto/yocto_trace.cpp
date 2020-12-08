@@ -1533,6 +1533,7 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
 
   if (!shadow_intersection.hit) {
     printf("[warning] Shadow ray hitting nothing!\n");
+    return {radiance.x, radiance.y, radiance.z, 1};
   }
   // if (params.envhidden) {
   //   return {radiance.x, radiance.y, radiance.z, 1};
@@ -1544,7 +1545,7 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
     auto l_instance     = scene->instances[shadow_intersection.instance];
     auto l_element      = shadow_intersection.element;
     auto l_uv           = shadow_intersection.uv;
-    auto isec_lposition = eval_position(instance, element, uv);
+    auto isec_lposition = eval_position(l_instance, l_element, l_uv);
     if (length(lposition - isec_lposition) > 0.001) {
       return {radiance.x, radiance.y, radiance.z, 1};
     }

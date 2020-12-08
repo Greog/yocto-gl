@@ -55,13 +55,8 @@
     },
     "largearealight1": {
       "shape": "largearealight1",
-      "lookat": [-0.8, 1.6, 1.6, 0, 0.1, 0, 0, 1, 0],
+      "lookat": [0, 1, -1, 0, 1, 1, 0, 1, 0],
       "material": "largearealight1"
-    },
-    "largearealight2": {
-      "shape": "largearealight2",
-      "lookat": [0.8, 1.6, 1.6, 0, 0.1, 0, 0, 1, 0],
-      "material": "largearealight2"
     },
     "sphere-plastic-sharp": {
       "shape": "sphere",
