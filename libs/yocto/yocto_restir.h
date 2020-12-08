@@ -303,21 +303,10 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   radiance += point.emission;
 
   // handle delta
-  if (is_delta(point.bsdf)) return radiance;
-
-  // sample direct light
-  // restir_reservoir curr_reservoir;
-  // weight_sum                      = 0.0f;
-  // curr_reservoir.candidates_count = candidates_count;
-  // curr_reservoir.position         = point.position;
-  // curr_reservoir.normal           = point.normal;
-  // curr_reservoir.outgoing         = outgoing;
-  // curr_reservoir.bsdf             = point.bsdf;
-  // curr_reservoir.is_valid         = true;
+  if (is_delta(point.bsdf)) return point.emission;
 
   light_point light_point = {};
-  vec3f       bsdfcos     = {};
-  float       gterm       = 1;
+  vec3f       integrand   = zero3f;
   float       w_sum       = 0.0f;
 
   for (int i = 0; i < params.restir_candidates; i++) {
@@ -325,25 +314,22 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
 
     vec3f incoming = normalize(sample.position - point.position);
-    // abs(dot(sample.normal, -incoming)) /
-    // distance_squared(point.position, sample.position);
-    vec3f _bsdfcos = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float p_hat    = max(_bsdfcos * sample.emission);
+    vec3f integr   = sample.emission;
+    integr *= eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
+    integr *= geometric_term(point.position, sample, incoming);
 
-    float w = p_hat / p;
+    float w = max(integr) / p;
     w_sum += w;
 
     if (rand1f(rng) < (w / w_sum)) {
       light_point = sample;
-      gterm       = geometric_term(point.position, sample, incoming);
-      bsdfcos     = _bsdfcos * sample.emission;
+      integrand   = integr;
     }
   }
-  if (bsdfcos == zero3f) return radiance;
+  if (integrand == zero3f) return point.emission;
 
-  vec3f weight = bsdfcos * gterm;
-  weight /= max(bsdfcos * light_point.emission);
-  weight *= w_sum / params.restir_candidates;
+  integrand /= max(integrand);  // divide by p_hat
+  integrand *= w_sum / params.restir_candidates;
 
 #if 0
   // temporal reuse
@@ -359,12 +345,10 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
 
   // check visibility
   if (!is_point_visible(point.position, light_point.position, scene, bvh)) {
-    return radiance;
+    return point.emission;
   }
 
-  radiance += weight * light_point.emission;
-
-  return radiance;
+  return point.emission + integrand;
 }
 
 static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
