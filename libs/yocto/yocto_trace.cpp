@@ -1294,6 +1294,77 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   return radiance;
 }
 
+static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
+    const trace_lights* lights, const ray3f& ray_, rng_state& rng,
+    const trace_params& params) {
+  // initialize
+  auto ray      = ray_;
+  auto hit      = !params.envhidden && !scene->environments.empty();
+  auto radiance = zero3f;
+
+  // intersect next point
+  auto intersection = intersect_bvh(bvh, ray);
+  if (!intersection.hit) {
+    if (!params.envhidden) {
+      radiance = eval_environment(scene, ray.d);
+    }
+    return {radiance.x, radiance.y, radiance.z, 1};
+  }
+  hit = true;
+
+  // prepare shading point
+  auto outgoing = -ray.d;
+  auto instance = scene->instances[intersection.instance];
+  auto element  = intersection.element;
+  auto uv       = intersection.uv;
+  auto position = eval_position(instance, element, uv);
+  auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+  auto emission = eval_emission(instance, element, uv, normal, outgoing);
+  // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+  auto bsdf = eval_bsdf(instance, element, uv, normal, outgoing);
+
+  // accumulate emission
+  radiance += eval_emission(emission, normal, outgoing);
+
+  // handle delta
+  if (is_delta(bsdf)) return {radiance.x, radiance.y, radiance.z, 1};
+
+  // sample shadow ray direction
+  auto incoming = sample_lights(
+      scene, lights, position, rand1f(rng), rand1f(rng), rand2f(rng));
+
+  auto bsdfcos = eval_bsdfcos(bsdf, normal, outgoing, incoming);
+  auto pdf     = sample_lights_pdf(scene, bvh, lights, position, incoming);
+  auto weight  = bsdfcos / pdf;
+
+  // check weight
+  if (weight == zero3f || !isfinite(weight))
+    return {radiance.x, radiance.y, radiance.z, 1};
+
+  // shadow ray
+  auto shadow_ray          = ray3f{position, incoming};
+  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
+  if (!shadow_intersection.hit) {
+    if (params.envhidden) {
+      return {radiance.x, radiance.y, radiance.z, 1};
+    } else {
+      radiance += weight * eval_environment(scene, shadow_ray.d);
+    }
+  } else {
+    auto outgoing = -shadow_ray.d;
+    auto instance = scene->instances[shadow_intersection.instance];
+    auto element  = shadow_intersection.element;
+    auto uv       = shadow_intersection.uv;
+    // auto position = eval_position(instance, element, uv);
+    auto normal   = eval_shading_normal(instance, element, uv, outgoing);
+    auto emission = eval_emission(instance, element, uv, normal, outgoing);
+    // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+    // auto bsdf     = eval_bsdf(instance, element, uv, normal, outgoing);
+    radiance += weight * eval_emission(emission, normal, outgoing);
+  }
+  return {radiance.x, radiance.y, radiance.z, 1};
+}
+
 // Recursive path tracing.
 static vec4f trace_path(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, rng_state& rng,
@@ -1773,6 +1844,7 @@ using sampler_func = vec4f (*)(const trace_scene* scene, const trace_bvh* bvh,
 static sampler_func get_trace_sampler_func(const trace_params& params) {
   switch (params.sampler) {
     case trace_sampler_type::restir: return {};
+    case trace_sampler_type::direct: return trace_direct;
     case trace_sampler_type::path: return trace_path;
     case trace_sampler_type::naive: return trace_naive;
     case trace_sampler_type::eyelight: return trace_eyelight;
@@ -1789,6 +1861,7 @@ static sampler_func get_trace_sampler_func(const trace_params& params) {
 // Check is a sampler requires lights
 bool is_sampler_lit(const trace_params& params) {
   switch (params.sampler) {
+    case trace_sampler_type::direct: return true;
     case trace_sampler_type::path: return true;
     case trace_sampler_type::naive: return true;
     case trace_sampler_type::eyelight: return false;

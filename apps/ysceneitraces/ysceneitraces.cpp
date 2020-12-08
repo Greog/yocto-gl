@@ -236,9 +236,9 @@ void init_scene(trace_scene* scene, sceneio_scene* ioscene,
 
 int main(int argc, const char* argv[]) {
   // application
-  auto app_guard = std::make_unique<app_state>();
-  auto app       = app_guard.get();
-
+  auto app_guard      = std::make_unique<app_state>();
+  auto app            = app_guard.get();
+  app->params.sampler = trace_sampler_type::restir;
   // command line options
   auto camera_name = ""s;
   auto add_skyenv  = false;
