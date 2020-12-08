@@ -1542,26 +1542,19 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
 
   // prepare shading point
   auto outgoing = -ray.d;
-  auto instance = scene->instances[intersection.instance];
-  auto element  = intersection.element;
-  auto uv       = intersection.uv;
-  auto position = eval_position(instance, element, uv);
-  auto normal   = eval_shading_normal(instance, element, uv, outgoing);
-  auto emission = eval_emission(instance, element, uv, normal, outgoing);
-  // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
-  auto bsdf = eval_bsdf(instance, element, uv, normal, outgoing);
-
+  auto point    = make_shading_point(intersection, outgoing, scene);
+ 
   // accumulate emission
-  radiance += eval_emission(emission, normal, outgoing);
+  radiance += eval_emission(point.emission, point.normal, outgoing);
 
   // handle delta
-  if (is_delta(bsdf)) return {radiance.x, radiance.y, radiance.z, 1};
+  if (is_delta(point.bsdf)) return {radiance.x, radiance.y, radiance.z, 1};
 
   // sample point on light
   auto [lposition, pdf] = sample_area_lights(
-      scene, lights, position, rand1f(rng), rand1f(rng), rand2f(rng));
-  auto incoming = normalize(lposition - position);
-  auto bsdfcos  = eval_bsdfcos(bsdf, normal, outgoing, incoming);
+      scene, lights, point.position, rand1f(rng), rand1f(rng), rand2f(rng));
+  auto incoming = normalize(lposition - point.position);
+  auto bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
   auto weight   = bsdfcos / pdf;
 
   // check weight
@@ -1569,10 +1562,10 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
     return {radiance.x, radiance.y, radiance.z, 1};
 
   // shadow ray
-  auto shadow_ray          = ray3f{position, incoming};
+  auto shadow_ray          = ray3f{point.position, incoming};
   auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
 
-  if (!is_point_visible(position, lposition, scene, bvh)) {
+  if (!is_point_visible(point.position, lposition, scene, bvh)) {
     return {radiance.x, radiance.y, radiance.z, 1};
   }
   // if (params.envhidden) {
@@ -1595,7 +1588,7 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
     auto l_emission = eval_emission(
         l_instance, l_element, l_uv, l_normal, l_outgoing);
     auto geometric_term = abs(dot(l_normal, l_outgoing)) /
-                          distance_squared(position, lposition);
+                          distance_squared(point.position, lposition);
     weight *= geometric_term;
     radiance += weight * eval_emission(l_emission, l_normal, l_outgoing);
   }
