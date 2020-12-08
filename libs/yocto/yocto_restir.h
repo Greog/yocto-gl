@@ -1,4 +1,9 @@
 
+struct light_point {
+  vec3f position = {};
+  vec3f normal   = {};
+  vec3f emission = {};
+};
 struct shading_point {
   vec3f      position = {};
   vec3f      normal   = {};
@@ -19,6 +24,33 @@ inline shading_point make_shading_point(const bvh_intersection& intersection,
   point.bsdf     = eval_bsdf(instance, element, uv, point.normal, outgoing);
   // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
   return point;
+}
+
+// Sample lights wrt area
+static pair<light_point, float> sample_area_lights(const trace_scene* scene,
+    const trace_lights* lights, float rl, float rel, const vec2f& ruv) {
+  auto pdf      = 1.0f;
+  auto light_id = sample_uniform((int)lights->lights.size(), rl);
+  pdf *= sample_uniform_pdf((int)lights->lights.size());
+
+  auto light = lights->lights[light_id];
+  if (light->instance == nullptr) {
+    assert(0 && "environments not supported for now");
+    return {};
+  }
+
+  auto instance = light->instance;
+  auto element  = sample_discrete_cdf(light->elements_cdf, rel);
+  auto uv = (!instance->shape->triangles.empty()) ? sample_triangle(ruv) : ruv;
+  auto point     = light_point{};
+  point.position = eval_position(light->instance, element, uv);
+  point.normal   = eval_normal(light->instance, element, uv);
+  point.emission = eval_emission(
+      instance, element, uv, point.normal, {});
+
+  auto area = light->elements_cdf.back();
+  pdf /= area;
+  return {point, pdf};
 }
 
 static restir_light_sample sample_lights_restir(const trace_scene* scene,
@@ -274,9 +306,9 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
   if (is_delta(point.bsdf)) return {radiance.x, radiance.y, radiance.z, 1};
 
   // sample point on light
-  auto [lposition, pdf] = sample_area_lights(
-      scene, lights, point.position, rand1f(rng), rand1f(rng), rand2f(rng));
-  auto incoming = normalize(lposition - point.position);
+  auto [light_point, pdf] = sample_area_lights(
+      scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
+  auto incoming = normalize(light_point.position - point.position);
   auto bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
   auto weight   = bsdfcos / pdf;
 
@@ -284,19 +316,13 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
   if (weight == zero3f || !isfinite(weight))
     return {radiance.x, radiance.y, radiance.z, 1};
 
-  // shadow ray
-  auto shadow_ray          = ray3f{point.position, incoming};
-  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
-
-  if (!is_point_visible(point.position, lposition, scene, bvh)) {
+  // check visibility
+  if (!is_point_visible(point.position, light_point.position, scene, bvh)) {
     return {radiance.x, radiance.y, radiance.z, 1};
   }
 
-  auto light_point = make_shading_point(
-      shadow_intersection, -shadow_ray.d, scene);
-
   // TODO(giacomo): refactor this into a function.
-  auto geometric_term = abs(dot(light_point.normal, -shadow_ray.d)) /
+  auto geometric_term = abs(dot(light_point.normal, -incoming)) /
                         distance_squared(point.position, light_point.position);
   weight *= geometric_term;
   radiance += weight * light_point.emission;

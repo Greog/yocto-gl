@@ -1170,47 +1170,6 @@ static vec3f sample_lights(const trace_scene* scene, const trace_lights* lights,
   }
 }
 
-// Sample lights wrt area
-static pair<vec3f, float> sample_area_lights(const trace_scene* scene,
-    const trace_lights* lights, const vec3f& _position, float rl, float rel,
-    const vec2f& ruv) {
-  auto pdf      = 1.0f;
-  auto light_id = sample_uniform((int)lights->lights.size(), rl);
-  pdf *= sample_uniform_pdf((int)lights->lights.size());
-
-  auto light = lights->lights[light_id];
-  if (light->instance != nullptr) {
-    auto instance = light->instance;
-    auto element  = sample_discrete_cdf(light->elements_cdf, rel);
-    auto uv       = (!instance->shape->triangles.empty()) ? sample_triangle(ruv)
-                                                    : ruv;
-    auto lposition = eval_position(light->instance, element, uv);
-    auto area      = light->elements_cdf.back();
-    pdf /= area;
-    return {lposition, pdf};
-  } else if (light->environment != nullptr) {
-    auto environment = light->environment;
-    // TODO(giacomo): compute non-uniform environment pdf
-    // if (environment->emission_tex != nullptr) {
-    //   auto emission_tex = environment->emission_tex;
-    //   auto idx          = sample_discrete_cdf(light->elements_cdf, rel);
-    //   auto size         = texture_size(emission_tex);
-    //   auto uv           = vec2f{
-    //       ((idx % size.x) + 0.5f) / size.x, ((idx / size.x) + 0.5f) /
-    //       size.y};
-    //   return transform_direction(environment->frame,
-    //       {cos(uv.x * 2 * pif) * sin(uv.y * pif), cos(uv.y * pif),
-    //           sin(uv.x * 2 * pif) * sin(uv.y * pif)});
-    // } else {
-
-    auto lposition = sample_sphere(ruv);
-    pdf *= sample_sphere_pdf(lposition);
-    return {lposition, pdf};
-  } else {
-    return {};
-  }
-}
-
 // Sample lights pdf
 static float sample_lights_pdf(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const vec3f& position, const vec3f& direction) {
