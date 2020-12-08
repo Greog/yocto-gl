@@ -219,10 +219,10 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   vec3f       integrand;
   light_point light_point = {};
 
-// generate initial candidates
-#define num_candidates (256)
+  // generate initial candidates
+
   float w_sum = 0.0f;
-  for (int i = 0; i < num_candidates; i++) {
+  for (int i = 0; i < params.restir_candidates; i++) {
     auto [sample, p] = sample_area_lights(
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
 
@@ -246,7 +246,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   float p_hat = max(integrand);
 
   vec3f weight = f / p_hat;
-  weight *= w_sum / num_candidates;
+  weight *= w_sum / params.restir_candidates;
 
 #if 0
   // temporal reuse

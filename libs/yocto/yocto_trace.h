@@ -382,20 +382,21 @@ const auto trace_default_seed = 961748941ull;
 
 // Options for trace functions
 struct trace_params {
-  int                   resolution = 1280;
-  trace_sampler_type    sampler    = trace_sampler_type::path;
-  trace_falsecolor_type falsecolor = trace_falsecolor_type::diffuse;
-  int                   samples    = 512;
-  int                   bounces    = 8;
-  float                 clamp      = 100;
-  bool                  nocaustics = false;
-  bool                  envhidden  = false;
-  bool                  tentfilter = false;
-  uint64_t              seed       = trace_default_seed;
-  trace_bvh_type        bvh        = trace_bvh_type::default_;
-  bool                  noparallel = false;
-  int                   pratio     = 8;
-  float                 exposure   = 0;
+  int                   resolution        = 1280;
+  trace_sampler_type    sampler           = trace_sampler_type::path;
+  trace_falsecolor_type falsecolor        = trace_falsecolor_type::diffuse;
+  int                   samples           = 512;
+  int                   bounces           = 8;
+  float                 clamp             = 100;
+  bool                  nocaustics        = false;
+  bool                  envhidden         = false;
+  bool                  tentfilter        = false;
+  uint64_t              seed              = trace_default_seed;
+  trace_bvh_type        bvh               = trace_bvh_type::default_;
+  bool                  noparallel        = false;
+  int                   pratio            = 8;
+  float                 exposure          = 0;
+  int                   restir_candidates = 8;
 };
 
 const auto trace_sampler_names = std::vector<std::string>{"restir", "direct",
@@ -481,32 +482,32 @@ bool is_sampler_lit(const trace_params& params);
 struct restir_light_sample {
   vec3f emission;
   union {
-    vec3f position; // light instance
-    vec3f incoming; // environment
+    vec3f position;  // light instance
+    vec3f incoming;  // environment
   };
   bool is_environment;
 };
 
 struct restir_reservoir {
-  uint64_t candidates_count = 0;
-  restir_light_sample lsample = {};
-  float weight = 0.0f;
-  vec3f position = {};
-  vec3f normal = {};
-  vec3f outgoing = {};
-  trace_bsdf bsdf = {};
-  bool is_valid = false;
+  uint64_t            candidates_count = 0;
+  restir_light_sample lsample          = {};
+  float               weight           = 0.0f;
+  vec3f               position         = {};
+  vec3f               normal           = {};
+  vec3f               outgoing         = {};
+  trace_bsdf          bsdf             = {};
+  bool                is_valid         = false;
 };
 
 // [experimental] Asynchronous state
 struct trace_state {
-  image<vec4f>     render            = {};
-  image<vec4f>     accumulation      = {};
-  image<int>       samples           = {};
-  image<rng_state> rngs              = {};
-  image<restir_reservoir> reservoirs = {};
-  future<void>     worker            = {};  // async
-  atomic<bool>     stop              = {};  // async
+  image<vec4f>            render       = {};
+  image<vec4f>            accumulation = {};
+  image<int>              samples      = {};
+  image<rng_state>        rngs         = {};
+  image<restir_reservoir> reservoirs   = {};
+  future<void>            worker       = {};  // async
+  atomic<bool>            stop         = {};  // async
 };
 
 // [experimental] Callback used to report partially computed image
