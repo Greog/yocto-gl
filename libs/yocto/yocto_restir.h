@@ -207,7 +207,6 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (is_delta(point.bsdf)) return radiance;
 
   // sample direct light
-  const uint64_t candidates_count = 8;
   // restir_reservoir curr_reservoir;
   // weight_sum                      = 0.0f;
   // curr_reservoir.candidates_count = candidates_count;
@@ -217,33 +216,37 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   // curr_reservoir.bsdf             = point.bsdf;
   // curr_reservoir.is_valid         = true;
 
-  vec3f       bsdfcos;
+  vec3f       integrand;
   light_point light_point = {};
-  float       w_sampled;
 
-  // generate initial candidates
+// generate initial candidates
+#define num_candidates (256)
   float w_sum = 0.0f;
-  for (int i = 0; i < candidates_count; i++) {
-    auto [sample, pdf] = sample_area_lights(
+  for (int i = 0; i < num_candidates; i++) {
+    auto [sample, p] = sample_area_lights(
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
-    vec3f incoming       = normalize(sample.position - point.position);
-    vec3f bsdfcos_sample = eval_bsdfcos(
-        point.bsdf, point.normal, outgoing, incoming);
-    float w = (max(bsdfcos_sample * sample.emission)) / pdf;
+
+    vec3f incoming = normalize(sample.position - point.position);
+    auto  gterm    = abs(dot(sample.normal, -incoming)) /
+                 distance_squared(point.position, sample.position);
+    vec3f bsdfcos = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
+    float p_hat   = max(bsdfcos * gterm * sample.emission);
+
+    float w = p_hat / p;
     w_sum += w;
+
     if (rand1f(rng) < (w / w_sum)) {
       light_point = sample;
-      bsdfcos     = bsdfcos_sample;
-      w_sampled   = w;
+      integrand   = bsdfcos * gterm * sample.emission;
     }
   }
-  if(bsdfcos == zero3f) return radiance;
-  
-  vec3f weight = bsdfcos;
-  weight /= w_sampled / w_sum;
+  if (integrand == zero3f) return radiance;
 
-  // (1.0f / max(bsdfcos * curr_reservoir.lsample.emission)) *
-  // ((1.0f / candidates_count) * weight_sum);
+  vec3f f     = integrand;
+  float p_hat = max(integrand);
+
+  vec3f weight = f / p_hat;
+  weight *= w_sum / num_candidates;
 
 #if 0
   // temporal reuse
@@ -262,12 +265,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     return radiance;
   }
 
-  // TODO(giacomo): refactor this into a function.
-  vec3f incoming       = normalize(light_point.position - point.position);
-  auto  geometric_term = abs(dot(light_point.normal, -incoming)) /
-                        distance_squared(point.position, light_point.position);
-  weight *= geometric_term;
-  radiance += weight * light_point.emission;
+  radiance += integrand;
 
   return radiance;
 }
