@@ -1568,15 +1568,11 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
   if (!is_point_visible(point.position, lposition, scene, bvh)) {
     return {radiance.x, radiance.y, radiance.z, 1};
   }
-  // if (params.envhidden) {
-  //   return {radiance.x, radiance.y, radiance.z, 1};
-  // } else {
-  //   radiance += weight * eval_environment(scene, shadow_ray.d);
-  // }
 
   auto light_point = make_shading_point(
       shadow_intersection, -shadow_ray.d, scene);
 
+  // TODO(giacomo): refactor this into a function.
   auto geometric_term = abs(dot(light_point.normal, -shadow_ray.d)) /
                         distance_squared(point.position, light_point.position);
   weight *= geometric_term;
