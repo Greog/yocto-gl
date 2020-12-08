@@ -45,12 +45,30 @@ static pair<light_point, float> sample_area_lights(const trace_scene* scene,
   auto point     = light_point{};
   point.position = eval_position(light->instance, element, uv);
   point.normal   = eval_normal(light->instance, element, uv);
-  point.emission = eval_emission(
-      instance, element, uv, point.normal, {});
+  point.emission = eval_emission(instance, element, uv, point.normal, {});
 
   auto area = light->elements_cdf.back();
   pdf /= area;
   return {point, pdf};
+}
+
+static bool is_point_visible(const vec3f& position, const vec3f& point,
+    const trace_scene* scene, const trace_bvh* bvh, float threshold = 0.001) {
+  auto incoming            = normalize(point - position);
+  auto shadow_ray          = ray3f{position, incoming};
+  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
+  if (!shadow_intersection.hit) {
+    printf("[warning] Shadow ray hitting nothing!\n");
+    return false;
+  }
+
+  auto instance = scene->instances[shadow_intersection.instance];
+  auto element  = shadow_intersection.element;
+  auto uv       = shadow_intersection.uv;
+  if (length(point - eval_position(instance, element, uv)) < threshold) {
+    return true;
+  }
+  return false;
 }
 
 static restir_light_sample sample_lights_restir(const trace_scene* scene,
@@ -158,25 +176,6 @@ static vec3f restir_combine_reservoirs(restir_reservoir* output,
   return bsdfcos;
 }
 
-static bool is_point_visible(const vec3f& position, const vec3f& point,
-    const trace_scene* scene, const trace_bvh* bvh, float threshold = 0.001) {
-  auto incoming            = normalize(point - position);
-  auto shadow_ray          = ray3f{position, incoming};
-  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
-  if (!shadow_intersection.hit) {
-    printf("[warning] Shadow ray hitting nothing!\n");
-    return false;
-  }
-
-  auto instance = scene->instances[shadow_intersection.instance];
-  auto element  = shadow_intersection.element;
-  auto uv       = shadow_intersection.uv;
-  if (length(point - eval_position(instance, element, uv)) < threshold) {
-    return true;
-  }
-  return false;
-}
-
 static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, const vec2i& ij,
     trace_state* state, const trace_params& params) {
@@ -208,40 +207,45 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (is_delta(point.bsdf)) return radiance;
 
   // sample direct light
-  const uint64_t   candidates_count = 8;
-  float            weight_sum       = 0.0f;
-  restir_reservoir curr_reservoir;
-  weight_sum                      = 0.0f;
-  curr_reservoir.candidates_count = candidates_count;
-  curr_reservoir.position         = point.position;
-  curr_reservoir.normal           = point.normal;
-  curr_reservoir.outgoing         = outgoing;
-  curr_reservoir.bsdf             = point.bsdf;
-  curr_reservoir.is_valid         = true;
-  vec3f bsdfcos;
+  const uint64_t candidates_count = 8;
+  // restir_reservoir curr_reservoir;
+  // weight_sum                      = 0.0f;
+  // curr_reservoir.candidates_count = candidates_count;
+  // curr_reservoir.position         = point.position;
+  // curr_reservoir.normal           = point.normal;
+  // curr_reservoir.outgoing         = outgoing;
+  // curr_reservoir.bsdf             = point.bsdf;
+  // curr_reservoir.is_valid         = true;
+
+  vec3f       bsdfcos;
+  light_point light_point = {};
+  float       w_sampled;
 
   // generate initial candidates
+  float w_sum = 0.0f;
   for (int i = 0; i < candidates_count; i++) {
-    restir_light_sample lsample = sample_lights_restir(scene, lights,
-        point.position, rand1f(rng), rand1f(rng), rand2f(rng), outgoing);
-    vec3f candidate_incoming    = restir_eval_incoming(point.position, lsample);
-    vec3f candidate_emission    = lsample.emission;
-    float pdf                   = sample_lights_pdf(
-        scene, bvh, lights, point.position, candidate_incoming);
-    vec3f candidate_bsdfcos = eval_bsdfcos(
-        point.bsdf, point.normal, outgoing, candidate_incoming);
-    float candidate_weight = (max(candidate_bsdfcos * candidate_emission)) /
-                             pdf;
-    weight_sum += candidate_weight;
-    if (rand1f(rng) < (candidate_weight / weight_sum)) {
-      curr_reservoir.lsample = lsample;
-      bsdfcos                = candidate_bsdfcos;
+    auto [sample, pdf] = sample_area_lights(
+        scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
+    vec3f incoming       = normalize(sample.position - point.position);
+    vec3f bsdfcos_sample = eval_bsdfcos(
+        point.bsdf, point.normal, outgoing, incoming);
+    float w = (max(bsdfcos_sample * sample.emission)) / pdf;
+    w_sum += w;
+    if (rand1f(rng) < (w / w_sum)) {
+      light_point = sample;
+      bsdfcos     = bsdfcos_sample;
+      w_sampled   = w;
     }
   }
-  curr_reservoir.weight =
-      (1.0f / max(bsdfcos * curr_reservoir.lsample.emission)) *
-      ((1.0f / curr_reservoir.candidates_count) * weight_sum);
+  if(bsdfcos == zero3f) return radiance;
+  
+  vec3f weight = bsdfcos;
+  weight /= w_sampled / w_sum;
 
+  // (1.0f / max(bsdfcos * curr_reservoir.lsample.emission)) *
+  // ((1.0f / candidates_count) * weight_sum);
+
+#if 0
   // temporal reuse
   restir_reservoir* reservoir = &state->reservoirs[ij];
   if (!reservoir->is_valid) {
@@ -251,28 +255,19 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     restir_reservoir* reservoirs[2]  = {&curr_reservoir, &prev_reservoir};
     bsdfcos = restir_combine_reservoirs(reservoir, reservoirs, 2, rng);
   }
+#endif
 
-  vec3f weight   = bsdfcos * reservoir->weight;
-  vec3f incoming = restir_eval_incoming(point.position, reservoir->lsample);
-
-  // check weight
-  if (weight == zero3f || !isfinite(weight)) return radiance;
-
-  // shadow ray
-  auto shadow_ray          = ray3f{point.position, incoming};
-  auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
-  if (!shadow_intersection.hit) {
-    if (params.envhidden) {
-      return radiance;
-    } else {
-      radiance += weight * eval_environment(scene, shadow_ray.d);
-    }
-  } else {
-    auto outgoing    = -shadow_ray.d;
-    auto light_point = make_shading_point(
-        shadow_intersection, -shadow_ray.d, scene);
-    radiance += weight * light_point.emission;
+  // check visibility
+  if (!is_point_visible(point.position, light_point.position, scene, bvh)) {
+    return radiance;
   }
+
+  // TODO(giacomo): refactor this into a function.
+  vec3f incoming       = normalize(light_point.position - point.position);
+  auto  geometric_term = abs(dot(light_point.normal, -incoming)) /
+                        distance_squared(point.position, light_point.position);
+  weight *= geometric_term;
+  radiance += weight * light_point.emission;
 
   return radiance;
 }
