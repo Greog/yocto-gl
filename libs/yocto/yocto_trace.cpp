@@ -1500,6 +1500,28 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   return radiance;
 }
 
+struct shading_point {
+  vec3f      position = {};
+  vec3f      normal   = {};
+  vec3f      emission = {};
+  trace_bsdf bsdf     = {};
+  // float opacity = 1;
+};
+
+inline shading_point make_shading_point(const bvh_intersection& intersection,
+    const vec3f& outgoing, const trace_scene* scene) {
+  auto instance  = scene->instances[intersection.instance];
+  auto element   = intersection.element;
+  auto uv        = intersection.uv;
+  auto point     = shading_point{};
+  point.position = eval_position(instance, element, uv);
+  point.normal   = eval_shading_normal(instance, element, uv, outgoing);
+  point.emission = eval_emission(instance, element, uv, point.normal, outgoing);
+  point.bsdf     = eval_bsdf(instance, element, uv, point.normal, outgoing);
+  // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
+  return point;
+}
+
 static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
     const trace_lights* lights, const ray3f& ray_, rng_state& rng,
     const trace_params& params) {
