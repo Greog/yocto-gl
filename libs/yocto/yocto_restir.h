@@ -42,7 +42,7 @@ static pair<light_point, float> sample_area_lights(const trace_scene* scene,
 
   auto light = lights->lights[light_id];
   if (light->instance == nullptr) {
-    assert(0 && "environments not supported for now");
+    assert(0 && "environments not supported for now\n");
     return {};
   }
 
@@ -64,53 +64,37 @@ static float geometric_term(const vec3f& position, const vec3f& lposition,
   return abs(dot(lnormal, -incoming)) / distance_squared(position, lposition);
 }
 
-// static restir_reservoir combine_reservoirs_biased(
-//     const vector<restir_reservoir>& reservoirs, rng_state& rng) {
-//   float             weight_sum       = 0.0f;
-//   restir_reservoir* chosen_r         = reservoirs[0];
-//   restir_reservoir* curr_r           = reservoirs[0];
-//   uint64_t          candidates_count = 0;
+static restir_reservoir combine_reservoirs_biased(
+    const shading_point& point, const vec3f& outgoing,
+    const vector<restir_reservoir*>& reservoirs, rng_state& rng) {
+  restir_reservoir        res;
+  float                   w_sum           = 0.0f;
+  restir_reservoir*       sampled_res     = nullptr;
+  float                   sampled_p_hat_q = 0.0f;
 
-//   for (int i = 0; i < count; i++) {
-//     restir_reservoir* r = reservoirs[i];
-//     vec3f incoming      = normalize(r->lsample.position - curr_r->position);
-//     float weight        = max(eval_bsdfcos(curr_r->bsdf, curr_r->normal,
-//                            curr_r->outgoing, incoming) *
-//                        r->lsample.emission) *
-//                    r->weight * r->candidates_count;
-//     weight_sum += weight;
-//     candidates_count += r->candidates_count;
-//     if (rand1f(rng) < (weight / weight_sum)) {
-//       chosen_r = r;
-//     }
-//   }
+  for (auto r : reservoirs) {
+    vec3f incoming = normalize(r->lpoint.position - point.position);
+    vec3f bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
+    float gterm    = geometric_term(
+        point.position, r->lpoint.position, r->lpoint.normal, incoming);
+    float p_hat_q  = max(bsdfcos * r->lpoint.emission) * gterm;
+    float w        = p_hat_q * r->weight * r->num_candidates;
 
-//   output->candidates_count = candidates_count;
-//   output->lsample          = chosen_r->lsample;
-//   output->position         = curr_r->position;
-//   output->normal           = curr_r->normal;
-//   output->outgoing         = curr_r->outgoing;
-//   output->bsdf             = curr_r->bsdf;
+    w_sum += w;
+    res.num_candidates += r->num_candidates;
+    if (rand1f(rng) < (w / w_sum)) {
+      sampled_res     = r;
+      sampled_p_hat_q = p_hat_q;
+    }
+  }
 
-//   uint64_t Z = 0;
-//   for (int i = 0; i < count; i++) {
-//     restir_reservoir* r = reservoirs[i];
-//     vec3f incoming      = normalize(output->lsample.position - r->position);
-//     float pdf = max(eval_bsdfcos(r->bsdf, r->normal, r->outgoing, incoming) *
-//                     output->lsample.emission);
-//     if (pdf > 0) {
-//       Z += r->candidates_count;
-//     }
-//   }
-//   float m = 1.0f / Z;
+  if (sampled_res != nullptr) {
+    res.lpoint = sampled_res->lpoint;
+    res.weight = (1.0f / sampled_p_hat_q) * (1.0f / res.num_candidates) * w_sum;
+  }
 
-//   vec3f incoming = normalize(output->lsample.position - output->position);
-//   vec3f bsdfcos  = eval_bsdfcos(
-//       output->bsdf, output->normal, output->outgoing, incoming);
-//   float pdf      = max(bsdfcos * output->lsample.emission);
-//   output->weight = (1.0f / pdf) * (m * weight_sum);
-//   return bsdfcos;
-// }
+  return res;
+}
 
 static restir_reservoir make_reservoir(const shading_point& point,
     const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
@@ -139,7 +123,7 @@ static restir_reservoir make_reservoir(const shading_point& point,
     }
   }
 
-  if (sampled_p_hat != 0) {
+  if (sampled_p_hat != 0.0f) {
     res.weight = (1.0f / sampled_p_hat) * (1.0f / num_candidates) * w_sum;
   }
 
