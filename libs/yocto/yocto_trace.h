@@ -479,12 +479,8 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
 bool is_sampler_lit(const trace_params& params);
 
 struct restir_light_sample {
-  vec3f emission;
-  union {
-    vec3f position; // light instance
-    vec3f incoming; // environment
-  };
-  bool is_environment;
+  vec3f emission = {};
+  vec3f position = {};
 };
 
 struct restir_reservoir {
@@ -495,7 +491,6 @@ struct restir_reservoir {
   vec3f normal = {};
   vec3f outgoing = {};
   trace_bsdf bsdf = {};
-  bool is_valid = false;
 };
 
 // [experimental] Asynchronous state
