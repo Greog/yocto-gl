@@ -382,20 +382,21 @@ const auto trace_default_seed = 961748941ull;
 
 // Options for trace functions
 struct trace_params {
-  int                   resolution = 1280;
-  trace_sampler_type    sampler    = trace_sampler_type::path;
-  trace_falsecolor_type falsecolor = trace_falsecolor_type::diffuse;
-  int                   samples    = 512;
-  int                   bounces    = 8;
-  float                 clamp      = 100;
-  bool                  nocaustics = false;
-  bool                  envhidden  = false;
-  bool                  tentfilter = false;
-  uint64_t              seed       = trace_default_seed;
-  trace_bvh_type        bvh        = trace_bvh_type::default_;
-  bool                  noparallel = false;
-  int                   pratio     = 8;
-  float                 exposure   = 0;
+  int                   resolution        = 1280;
+  trace_sampler_type    sampler           = trace_sampler_type::path;
+  trace_falsecolor_type falsecolor        = trace_falsecolor_type::diffuse;
+  int                   samples           = 512;
+  int                   bounces           = 8;
+  float                 clamp             = 100;
+  bool                  nocaustics        = false;
+  bool                  envhidden         = false;
+  bool                  tentfilter        = false;
+  uint64_t              seed              = trace_default_seed;
+  trace_bvh_type        bvh               = trace_bvh_type::default_;
+  bool                  noparallel        = false;
+  int                   pratio            = 8;
+  float                 exposure          = 0;
+  int                   restir_candidates = 8;
 };
 
 const auto trace_sampler_names = std::vector<std::string>{"restir", "direct",
@@ -478,19 +479,24 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
 // Check is a sampler requires lights
 bool is_sampler_lit(const trace_params& params);
 
-struct restir_light_sample {
-  vec3f emission = {};
+struct light_point {
   vec3f position = {};
+  vec3f normal   = {};
+  vec3f emission = {};
+};
+
+struct shading_point {
+  vec3f      position = {};
+  vec3f      normal   = {};
+  vec3f      emission = {};
+  trace_bsdf bsdf     = {};
+  // float opacity = 1;
 };
 
 struct restir_reservoir {
-  uint64_t candidates_count = 0;
-  restir_light_sample lsample = {};
-  float weight = 0.0f;
-  vec3f position = {};
-  vec3f normal = {};
-  vec3f outgoing = {};
-  trace_bsdf bsdf = {};
+  uint64_t    num_candidates = 0;
+  light_point lpoint         = {};
+  float       weight         = 0.0f;
 };
 
 // [experimental] Asynchronous state
