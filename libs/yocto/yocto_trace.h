@@ -488,7 +488,7 @@ struct restir_light_sample {
   bool is_environment;
 };
 
-struct restir_reservoir {
+struct old_restir_reservoir {
   uint64_t            candidates_count = 0;
   restir_light_sample lsample          = {};
   float               weight           = 0.0f;
@@ -497,6 +497,24 @@ struct restir_reservoir {
   vec3f               outgoing         = {};
   trace_bsdf          bsdf             = {};
   bool                is_valid         = false;
+};
+
+struct shading_point {
+  vec3f      position = {};
+  vec3f      normal   = {};
+  vec3f      emission = {};
+  trace_bsdf bsdf     = {};
+};
+struct light_point {
+  vec3f position = {};
+  vec3f normal   = {};
+  vec3f emission = {};
+};
+
+struct restir_reservoir {
+  light_point point          = {};
+  float       weight         = 0;
+  size_t      num_candidates = 0;
 };
 
 // [experimental] Asynchronous state

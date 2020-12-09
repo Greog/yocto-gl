@@ -1,17 +1,3 @@
-
-struct light_point {
-  vec3f position = {};
-  vec3f normal   = {};
-  vec3f emission = {};
-};
-struct shading_point {
-  vec3f      position = {};
-  vec3f      normal   = {};
-  vec3f      emission = {};
-  trace_bsdf bsdf     = {};
-  // float opacity = 1;
-};
-
 inline shading_point make_shading_point(const bvh_intersection& intersection,
     const vec3f& outgoing, const trace_scene* scene) {
   auto instance  = scene->instances[intersection.instance];
@@ -22,11 +8,10 @@ inline shading_point make_shading_point(const bvh_intersection& intersection,
   point.normal   = eval_shading_normal(instance, element, uv, outgoing);
   point.emission = eval_emission(instance, element, uv, point.normal, outgoing);
   point.bsdf     = eval_bsdf(instance, element, uv, point.normal, outgoing);
-  // auto opacity  = eval_opacity(instance, element, uv, normal, outgoing);
   return point;
 }
 
-// Sample lights wrt area
+// Sample lights with respect to area
 static pair<light_point, float> sample_area_lights(const trace_scene* scene,
     const trace_lights* lights, float rl, float rel, const vec2f& ruv) {
   auto pdf      = 1.0f;
@@ -52,9 +37,9 @@ static pair<light_point, float> sample_area_lights(const trace_scene* scene,
   return {point, pdf};
 }
 
-static bool is_point_visible(const vec3f& position, const vec3f& point,
+static bool is_point_visible(const vec3f& position, const vec3f& light,
     const trace_scene* scene, const trace_bvh* bvh, float threshold = 0.001) {
-  auto incoming            = normalize(point - position);
+  auto incoming            = normalize(light - position);
   auto shadow_ray          = ray3f{position, incoming};
   auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
   if (!shadow_intersection.hit) {
@@ -65,7 +50,7 @@ static bool is_point_visible(const vec3f& position, const vec3f& point,
   auto instance = scene->instances[shadow_intersection.instance];
   auto element  = shadow_intersection.element;
   auto uv       = shadow_intersection.uv;
-  if (length(point - eval_position(instance, element, uv)) < threshold) {
+  if (length(light - eval_position(instance, element, uv)) < threshold) {
     return true;
   }
   return false;
@@ -80,74 +65,17 @@ vec3f restir_eval_incoming(
   }
 }
 
-// combine the first reservoir with all the others
-// the output reservoir shall not be in the array
-// probably can be faster
-static vec3f restir_combine_reservoirs(restir_reservoir* output,
-    restir_reservoir** reservoirs, int count, rng_state& rng) {
-  float             weight_sum       = 0.0f;
-  restir_reservoir* chosen_r         = reservoirs[0];
-  restir_reservoir* curr_r           = reservoirs[0];
-  uint64_t          candidates_count = 0;
-
-  for (int i = 0; i < count; i++) {
-    restir_reservoir* r = reservoirs[i];
-    vec3f incoming      = restir_eval_incoming(curr_r->position, r->lsample);
-    float weight        = max(eval_bsdfcos(curr_r->bsdf, curr_r->normal,
-                           curr_r->outgoing, incoming) *
-                       r->lsample.emission) *
-                   r->weight * r->candidates_count;
-    weight_sum += weight;
-    candidates_count += r->candidates_count;
-    if (rand1f(rng) < (weight / weight_sum)) {
-      chosen_r = r;
-    }
-  }
-
-  output->candidates_count = candidates_count;
-  output->lsample          = chosen_r->lsample;
-  output->position         = curr_r->position;
-  output->normal           = curr_r->normal;
-  output->outgoing         = curr_r->outgoing;
-  output->bsdf             = curr_r->bsdf;
-  output->is_valid         = true;
-
-  uint64_t Z = 0;
-  for (int i = 0; i < count; i++) {
-    restir_reservoir* r = reservoirs[i];
-    vec3f incoming      = restir_eval_incoming(r->position, output->lsample);
-    float pdf = max(eval_bsdfcos(r->bsdf, r->normal, r->outgoing, incoming) *
-                    output->lsample.emission);
-    if (pdf > 0) {
-      Z += r->candidates_count;
-    }
-  }
-  float m = 1.0f / Z;
-
-  vec3f incoming = restir_eval_incoming(output->position, output->lsample);
-  vec3f bsdfcos  = eval_bsdfcos(
-      output->bsdf, output->normal, output->outgoing, incoming);
-  float pdf      = max(bsdfcos * output->lsample.emission);
-  output->weight = (1.0f / pdf) * (m * weight_sum);
-  return bsdfcos;
-}
-
+//
 float geometric_term(
     const vec3f& position, const light_point& point, const vec3f& incoming) {
   return abs(dot(point.normal, -incoming)) /
          distance_squared(position, point.position);
 }
 
-struct reservoir {
-  light_point point          = {};
-  float       weight         = 0;
-  size_t      num_candidates = 0;
-};
-
-reservoir make_reservoir(const shading_point& point, const vec3f& outgoing,
-    const trace_scene* scene, const trace_lights* lights, rng_state& rng,
-    int num_candidates) {
-  reservoir res = {};
+restir_reservoir make_reservoir(const shading_point& point,
+    const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
+    rng_state& rng, int num_candidates) {
+  restir_reservoir res = {};
 
   auto  sampled_p_hat = 0.0f;
   float w_sum         = 0.0f;
@@ -180,9 +108,9 @@ reservoir make_reservoir(const shading_point& point, const vec3f& outgoing,
   return res;
 }
 
-reservoir combine_reservoirs(const vector<reservoir>& reservoirs,
+restir_reservoir combine_reservoirs(const vector<restir_reservoir>& reservoirs,
     const shading_point& point, const vec3f& outgoing, rng_state& rng) {
-  reservoir result = {};
+  restir_reservoir result = {};
 
   auto sampled_p_hat = 0.0f;
   auto w_sum         = 0.0f;
@@ -208,8 +136,9 @@ reservoir combine_reservoirs(const vector<reservoir>& reservoirs,
   return result;
 }
 
-static vec3f shade_point(const shading_point& point, const reservoir& reservoir,
-    const vec3f& outgoing, const vec3f& incoming) {
+static vec3f shade_point(const shading_point& point,
+    const restir_reservoir& reservoir, const vec3f& outgoing,
+    const vec3f& incoming) {
   return reservoir.point.emission *
          eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming) *
          geometric_term(point.position, reservoir.point, incoming) *
@@ -246,18 +175,23 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   // handle delta
   if (is_delta(point.bsdf)) return radiance;
 
-  auto reservoir = make_reservoir(
+  auto res = make_reservoir(
       point, outgoing, scene, lights, rng, params.restir_candidates);
 
   // check visibility
-  if (reservoir.weight != 0) {
-    if (!is_point_visible(
-            point.position, reservoir.point.position, scene, bvh)) {
-      return radiance;
+  if (res.weight != 0) {
+    if (!is_point_visible(point.position, res.point.position, scene, bvh)) {
+      res.weight = 0;
     }
   }
-  auto incoming = normalize(reservoir.point.position - point.position);
-  radiance += shade_point(point, reservoir, outgoing, incoming);
+
+  auto& reservoir = state->reservoirs[ij];
+  reservoir       = combine_reservoirs({reservoir, res}, point, outgoing, rng);
+
+  if (reservoir.weight != 0) {
+    auto incoming = normalize(reservoir.point.position - point.position);
+    radiance += shade_point(point, reservoir, outgoing, incoming);
+  }
 
   return radiance;
 }
@@ -314,3 +248,55 @@ static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
 
   return {radiance.x, radiance.y, radiance.z, 1};
 }
+
+// combine the first reservoir with all the others
+// // the output reservoir shall not be in the array
+// // probably can be faster
+// static vec3f restir_combine_reservoirs(old_restir_reservoir* output,
+//     old_restir_reservoir** reservoirs, int count, rng_state& rng) {
+//   float                 weight_sum       = 0.0f;
+//   old_restir_reservoir* chosen_r         = reservoirs[0];
+//   old_restir_reservoir* curr_r           = reservoirs[0];
+//   uint64_t              candidates_count = 0;
+
+//   for (int i = 0; i < count; i++) {
+//     old_restir_reservoir* r = reservoirs[i];
+//     vec3f incoming = restir_eval_incoming(curr_r->position, r->lsample);
+//     float weight   = max(eval_bsdfcos(curr_r->bsdf, curr_r->normal,
+//                            curr_r->outgoing, incoming) *
+//                        r->lsample.emission) *
+//                    r->weight * r->candidates_count;
+//     weight_sum += weight;
+//     candidates_count += r->candidates_count;
+//     if (rand1f(rng) < (weight / weight_sum)) {
+//       chosen_r = r;
+//     }
+//   }
+
+//   output->candidates_count = candidates_count;
+//   output->lsample          = chosen_r->lsample;
+//   output->position         = curr_r->position;
+//   output->normal           = curr_r->normal;
+//   output->outgoing         = curr_r->outgoing;
+//   output->bsdf             = curr_r->bsdf;
+//   output->is_valid         = true;
+
+//   uint64_t Z = 0;
+//   for (int i = 0; i < count; i++) {
+//     old_restir_reservoir* r = reservoirs[i];
+//     vec3f incoming = restir_eval_incoming(r->position, output->lsample);
+//     float pdf = max(eval_bsdfcos(r->bsdf, r->normal, r->outgoing, incoming) *
+//                     output->lsample.emission);
+//     if (pdf > 0) {
+//       Z += r->candidates_count;
+//     }
+//   }
+//   float m = 1.0f / Z;
+
+//   vec3f incoming = restir_eval_incoming(output->position, output->lsample);
+//   vec3f bsdfcos  = eval_bsdfcos(
+//       output->bsdf, output->normal, output->outgoing, incoming);
+//   float pdf      = max(bsdfcos * output->lsample.emission);
+//   output->weight = (1.0f / pdf) * (m * weight_sum);
+//   return bsdfcos;
+// }
