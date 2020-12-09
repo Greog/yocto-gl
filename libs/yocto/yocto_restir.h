@@ -71,50 +71,6 @@ static bool is_point_visible(const vec3f& position, const vec3f& point,
   return false;
 }
 
-static restir_light_sample sample_lights_restir(const trace_scene* scene,
-    const trace_lights* lights, const vec3f& position, float rl, float rel,
-    const vec2f& ruv, const vec3f& outgoing) {
-  restir_light_sample lsample  = {};
-  auto                light_id = sample_uniform((int)lights->lights.size(), rl);
-  auto                light    = lights->lights[light_id];
-  vec3f               incoming;
-  vec3f               emission;
-  if (light->instance != nullptr) {
-    lsample.is_environment = false;
-    auto instance          = light->instance;
-    auto element           = sample_discrete_cdf(light->elements_cdf, rel);
-    auto uv = (!instance->shape->triangles.empty()) ? sample_triangle(ruv)
-                                                    : ruv;
-    auto normal    = eval_shading_normal(instance, element, uv, outgoing);
-    auto lposition = eval_position(light->instance, element, uv);
-    emission       = eval_emission(
-        eval_emission(instance, element, uv, normal, outgoing), normal,
-        outgoing);
-    lsample.position = lposition;
-  } else if (light->environment != nullptr) {
-    lsample.is_environment = true;
-    auto environment       = light->environment;
-    if (environment->emission_tex != nullptr) {
-      auto emission_tex = environment->emission_tex;
-      auto idx          = sample_discrete_cdf(light->elements_cdf, rel);
-      auto size         = texture_size(emission_tex);
-      auto uv           = vec2f{
-          ((idx % size.x) + 0.5f) / size.x, ((idx / size.x) + 0.5f) / size.y};
-      incoming         = transform_direction(environment->frame,
-          {cos(uv.x * 2 * pif) * sin(uv.y * pif), cos(uv.y * pif),
-              sin(uv.x * 2 * pif) * sin(uv.y * pif)});
-      lsample.incoming = incoming;
-    } else {
-      incoming = sample_sphere(ruv);
-    }
-    emission = eval_environment(scene, incoming);
-  } else {
-    incoming = zero3f;
-  }
-  lsample.emission = emission;
-  return lsample;
-}
-
 vec3f restir_eval_incoming(
     const vec3f& position, const restir_light_sample& lsample) {
   if (!lsample.is_environment) {
@@ -182,37 +138,60 @@ float geometric_term(
          distance_squared(position, point.position);
 }
 
-pair<light_point, vec3f> sample_lights_reservoir(const shading_point& point,
-    const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
-    rng_state& rng, int num_candidates) {
-  light_point light_point = {};
-  vec3f       result      = zero3f;
-  float       w_sum       = 0.0f;
+struct reservoir {
+  light_point point          = {};
+  float       w_sum          = 0;
+  float       weight         = 0;
+  int         num_candidates = 0;
+};
+
+inline bool update_reservoir(
+    reservoir& res, const light_point& point, float w, rng_state& rng) {
+  res.w_sum += w;
+  res.num_candidates += 1;
+  if (rand1f(rng) < (w / res.w_sum)) {
+    res.point = point;
+    return true;
+  } else
+    return false;
+}
+
+reservoir make_reservoir(const shading_point& point, const vec3f& outgoing,
+    const trace_scene* scene, const trace_lights* lights, rng_state& rng,
+    int num_candidates) {
+  reservoir res = {};
+
+  auto sampled_p_hat = 0.0f;
 
   for (int i = 0; i < num_candidates; i++) {
     auto [sample, p] = sample_area_lights(
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
+    vec3f incoming = normalize(sample.position - point.position);
 
-    vec3f incoming  = normalize(sample.position - point.position);
-    vec3f integrand = sample.emission;
-    integrand *= eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    integrand *= geometric_term(point.position, sample, incoming);
+    float p_hat = max(
+        sample.emission *
+        eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming) *
+        geometric_term(point.position, sample, incoming));
 
-    float w = max(integrand) / p;
-    w_sum += w;
-
-    if (rand1f(rng) < (w / w_sum)) {
-      light_point = sample;
-      result      = integrand;
+    float w = p_hat / p;
+    if (update_reservoir(res, sample, w, rng)) {
+      sampled_p_hat = p_hat;
     }
   }
 
-  if (result != zero3f) {
-    result /= max(result);  // divide by p_hat
-    result *= w_sum / num_candidates;
+  if (sampled_p_hat != 0) {
+    res.weight = (1.0f / sampled_p_hat) * (res.w_sum / res.num_candidates);
   }
+  return res;
+}
 
-  return {light_point, result};
+static vec3f shade_point(const shading_point& point, const reservoir& reservoir,
+    const vec3f& outgoing, const vec3f& incoming) {
+  // TODO(giacomo): don't store emission in reservoir, recompute emission here.
+  return reservoir.point.emission *
+         eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming) *
+         geometric_term(point.position, reservoir.point, incoming) *
+         reservoir.weight;
 }
 
 static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
@@ -243,19 +222,22 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   radiance += point.emission;
 
   // handle delta
-  if (is_delta(point.bsdf)) return point.emission;
+  if (is_delta(point.bsdf)) return radiance;
 
-  auto [light_point, integrand] = sample_lights_reservoir(
+  auto reservoir = make_reservoir(
       point, outgoing, scene, lights, rng, params.restir_candidates);
 
   // check visibility
-  if (integrand != zero3f) {
-    if (!is_point_visible(point.position, light_point.position, scene, bvh)) {
-      return point.emission;
+  if (reservoir.weight != 0) {
+    if (!is_point_visible(
+            point.position, reservoir.point.position, scene, bvh)) {
+      return radiance;
     }
   }
+  auto incoming = normalize(reservoir.point.position - point.position);
+  radiance += shade_point(point, reservoir, outgoing, incoming);
 
-  return point.emission + integrand;
+  return radiance;
 }
 
 static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
