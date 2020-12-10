@@ -177,6 +177,8 @@ int main(int argc, const char* argv[]) {
   add_option(cli, "--camera", camera_name, "Camera name.");
   add_option(cli, "--resolution,-r", params.resolution, "Image resolution.");
   add_option(cli, "--samples,-s", params.samples, "Number of samples.");
+  add_option(cli, "--noparallel", params.noparallel,
+      "Disable parallel execution.");
   add_option(cli, "--restir-candidates", params.restir_candidates,
       "Number of restir candidates");
   add_option(
@@ -195,6 +197,9 @@ int main(int argc, const char* argv[]) {
   add_option(cli, "scene", filename, "Scene filename", true);
   add_option(cli, "--denoise-features,-d", feature_images,
       "Generate denoise feature images");
+  add_option(cli, "--base-name", params.base_filename, "Debug base filename");
+  add_option(cli, "--restir-type", params.restir_type,
+      "Temporal reuse in restir");
   parse_cli(cli, argc, argv);
 
   // scene loading

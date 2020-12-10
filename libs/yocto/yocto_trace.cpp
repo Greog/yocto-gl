@@ -1778,6 +1778,11 @@ void init_state(trace_state* state, const trace_scene* scene,
     rng = make_rng(params.seed, rand1i(rng_, 1 << 31) / 2 + 1);
   }
   state->reservoirs.assign(image_size, {});
+  for (int i = 0; i < 8; i++) {
+    state->weights[i].assign(image_size, {});
+    state->visibility[i].assign(image_size, {});
+    state->chosen[i].assign(image_size, {});
+  }
 }
 
 // Forward declaration
@@ -1891,6 +1896,30 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
   }
 
   if (progress_cb) progress_cb("trace image", params.samples, params.samples);
+
+  std::string error;
+
+  if (params.base_filename.size() > 0) {
+    for (int i = 0; i < 8; i++) {
+      std::string number = std::to_string(i);
+      std::string filename = params.base_filename + "_w" + number + ".png";
+      save_image(filename, state->weights[i], error);
+    }
+
+    for (int i = 0; i < 8; i++) {
+      std::string number = std::to_string(i);
+      std::string filename = params.base_filename + "_v" + number + ".png";
+      save_image(filename, state->visibility[i], error);
+    }
+    if (params.restir_type == 1) {
+      for (int i = 0; i < 8; i++) {
+        std::string number = std::to_string(i);
+        std::string filename = params.base_filename + "_c" + number + ".png";
+        save_image(filename, state->chosen[i], error);
+      }
+    }
+  }
+
   return state->render;
 }
 

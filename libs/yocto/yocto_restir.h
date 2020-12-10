@@ -42,7 +42,7 @@ static pair<light_point, float> sample_area_lights(const trace_scene* scene,
 
   auto light = lights->lights[light_id];
   if (light->instance == nullptr) {
-    assert(0 && "environments not supported for now\n");
+    assert(0 && "environments not supported for now");
     return {};
   }
 
@@ -66,25 +66,31 @@ static float geometric_term(const vec3f& position, const vec3f& lposition,
 
 static restir_reservoir combine_reservoirs_biased(
     const shading_point& point, const vec3f& outgoing,
-    const vector<restir_reservoir*>& reservoirs, rng_state& rng) {
-  restir_reservoir        res;
+    const vector<restir_reservoir*>& reservoirs, rng_state& rng,
+    int* chosen_idx) {
+  restir_reservoir        res             = {};
   float                   w_sum           = 0.0f;
   restir_reservoir*       sampled_res     = nullptr;
   float                   sampled_p_hat_q = 0.0f;
 
-  for (auto r : reservoirs) {
+  for (int i = 0; i < reservoirs.size(); i++) {
+    auto& r = reservoirs[i];
+    // if (r->weight == 0.0f || !isfinite(r->weight)) { continue; }
+    if (r->weight == 0.0f) { continue; }
     vec3f incoming = normalize(r->lpoint.position - point.position);
     vec3f bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
     float gterm    = geometric_term(
         point.position, r->lpoint.position, r->lpoint.normal, incoming);
     float p_hat_q  = max(bsdfcos * r->lpoint.emission) * gterm;
     float w        = p_hat_q * r->weight * r->num_candidates;
+    // if (w == 0.0f) { continue; }
 
     w_sum += w;
     res.num_candidates += r->num_candidates;
     if (rand1f(rng) < (w / w_sum)) {
       sampled_res     = r;
       sampled_p_hat_q = p_hat_q;
+      (*chosen_idx) = i;
     }
   }
 
@@ -92,6 +98,9 @@ static restir_reservoir combine_reservoirs_biased(
     res.lpoint = sampled_res->lpoint;
     res.weight = (1.0f / sampled_p_hat_q) * (1.0f / res.num_candidates) * w_sum;
   }
+  // else {
+  //   res.num_candidates = 0;
+  // }
 
   return res;
 }
@@ -103,7 +112,6 @@ static restir_reservoir make_reservoir(const shading_point& point,
   float            w_sum         = 0.0f;
   float            sampled_p_hat = 0.0f;
 
-  // generate initial candidates
   for (int i = 0; i < num_candidates; i++) {
     auto [candidate, candidate_pdf] = sample_area_lights(
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
@@ -113,8 +121,8 @@ static restir_reservoir make_reservoir(const shading_point& point,
       point.position, candidate.position, candidate.normal, incoming);
     float p_hat    = max(bsdfcos * candidate.emission) * gterm;
     float w        = p_hat / candidate_pdf;
+    // if (w == 0.0f) { continue; }
 
-    // update reservoir
     w_sum += w;
     res.num_candidates += 1;
     if (rand1f(rng) < (w / w_sum)) {
@@ -126,6 +134,9 @@ static restir_reservoir make_reservoir(const shading_point& point,
   if (sampled_p_hat != 0.0f) {
     res.weight = (1.0f / sampled_p_hat) * (1.0f / num_candidates) * w_sum;
   }
+  // else {
+  //   res.num_candidates = 0;
+  // }
 
   return res;
 }
@@ -228,20 +239,81 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (is_delta(point.bsdf)) return radiance;
 
   // sample incoming direction
-  auto reservoir = make_reservoir(
-      point, outgoing, scene, lights, rng, params.restir_candidates);
-  auto incoming  = normalize(reservoir.lpoint.position - point.position);
+  restir_reservoir reservoir;
+  int chosen_idx;
+  if (params.restir_type == 0) { // no reuse
+    reservoir = make_reservoir(
+        point, outgoing, scene, lights, rng, params.restir_candidates);
+  }
+  else if (params.restir_type == 1) { // temporal reuse
+    auto curr_res = make_reservoir(
+        point, outgoing, scene, lights, rng, params.restir_candidates);
+    auto prev_res  = &state->reservoirs[ij];
+    if (prev_res->weight == 0.0f) {
+      state->reservoirs[ij] = curr_res;
+    } else {
+      if (state->samples[ij] >= 8) {
+        // set breakpoint here for stepping only samples >= 8
+        hit = false;
+      }
+      state->reservoirs[ij] = combine_reservoirs_biased(
+          point, outgoing, {&curr_res, prev_res}, rng, &chosen_idx);
+    }
+    reservoir = state->reservoirs[ij];
+  }
+  else if (params.restir_type == 2) { // 8 - 128
+    restir_reservoir reservoir;
+    auto r1 = make_reservoir(
+        point, outgoing, scene, lights, rng, 8);
+    auto r2 = make_reservoir(
+        point, outgoing, scene, lights, rng, 128);
+    reservoir = combine_reservoirs_biased(
+        point, outgoing, {&r1, &r2}, rng, &chosen_idx);
+  }
+  else if (params.restir_type == 3) { // 5 reservoirs different size
+    restir_reservoir  reservoir;
+    auto r1 = make_reservoir(
+        point, outgoing, scene, lights, rng, 4);
+    auto r2 = make_reservoir(
+        point, outgoing, scene, lights, rng, 8);
+    auto r3 = make_reservoir(
+        point, outgoing, scene, lights, rng, 12);
+    auto r4 = make_reservoir(
+        point, outgoing, scene, lights, rng, 16);
+    auto r5 = make_reservoir(
+        point, outgoing, scene, lights, rng, 20);
+    reservoir = combine_reservoirs_biased(
+        point, outgoing, {&r1, &r2, &r3, &r4, &r5}, rng, &chosen_idx);
+  }
+
+  auto incoming = normalize(reservoir.lpoint.position - point.position);
+
+  int sample = state->samples[ij];
+  state->weights[sample][ij]    =
+      {reservoir.weight, reservoir.weight, reservoir.weight, 1};
+  state->visibility[sample][ij] = {255, 0, 0, 255};
+  state->chosen[sample][ij]     = {255, 0, 0, 255};
 
   // check weight
   if (reservoir.weight == 0.0f || !isfinite(reservoir.weight)) {
     return radiance; 
   }
 
+  if (chosen_idx == 0) {
+    state->chosen[sample][ij] = {0, 0, 0, 255};
+  }
+  else {
+    state->chosen[sample][ij] = {255, 255, 255, 255};
+  }
+
   // check visibility
   if (!is_point_visible(
         point.position, reservoir.lpoint.position, scene, bvh)) {
+    state->visibility[sample][ij] = {0, 0, 0, 255};
     return radiance;
   }
+
+  state->visibility[sample][ij] = {255, 255, 255, 255};
 
   radiance += shade_point(point, reservoir, outgoing, incoming);
 

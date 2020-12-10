@@ -397,6 +397,8 @@ struct trace_params {
   int                   pratio            = 8;
   float                 exposure          = 0;
   int                   restir_candidates = 8;
+  std::string           base_filename     = {};
+  int                   restir_type       = 0;
 };
 
 const auto trace_sampler_names = std::vector<std::string>{"restir", "direct",
@@ -494,20 +496,26 @@ struct shading_point {
 };
 
 struct restir_reservoir {
-  uint64_t    num_candidates = 0;
-  light_point lpoint         = {};
-  float       weight         = 0.0f;
+  uint64_t      num_candidates = 0;
+  light_point   lpoint         = {};
+  shading_point point          = {};
+  float         weight         = 0.0f;
 };
 
 // [experimental] Asynchronous state
 struct trace_state {
-  image<vec4f>     render            = {};
-  image<vec4f>     accumulation      = {};
-  image<int>       samples           = {};
-  image<rng_state> rngs              = {};
-  image<restir_reservoir> reservoirs = {};
-  future<void>     worker            = {};  // async
-  atomic<bool>     stop              = {};  // async
+  image<vec4f>            render       = {};
+  image<vec4f>            accumulation = {};
+  image<int>              samples      = {};
+  image<rng_state>        rngs         = {};
+  image<restir_reservoir> reservoirs   = {};
+  future<void>            worker       = {};  // async
+  atomic<bool>            stop         = {};  // async
+
+  // restir debug
+  image<vec4f> weights[8]    = {};
+  image<vec4b> visibility[8] = {};
+  image<vec4b> chosen[8]     = {};
 };
 
 // [experimental] Callback used to report partially computed image
