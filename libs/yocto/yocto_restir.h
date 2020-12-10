@@ -240,7 +240,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
 
   // sample incoming direction
   restir_reservoir reservoir;
-  int chosen_idx;
+  int chosen_idx = 0;
   if (params.restir_type == 0) { // no reuse
     reservoir = make_reservoir(
         point, outgoing, scene, lights, rng, params.restir_candidates);
@@ -262,7 +262,6 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     reservoir = state->reservoirs[ij];
   }
   else if (params.restir_type == 2) { // 8 - 128
-    restir_reservoir reservoir;
     auto r1 = make_reservoir(
         point, outgoing, scene, lights, rng, 8);
     auto r2 = make_reservoir(
@@ -271,7 +270,6 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
         point, outgoing, {&r1, &r2}, rng, &chosen_idx);
   }
   else if (params.restir_type == 3) { // 5 reservoirs different size
-    restir_reservoir  reservoir;
     auto r1 = make_reservoir(
         point, outgoing, scene, lights, rng, 4);
     auto r2 = make_reservoir(
@@ -285,10 +283,27 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     reservoir = combine_reservoirs_biased(
         point, outgoing, {&r1, &r2, &r3, &r4, &r5}, rng, &chosen_idx);
   }
+  else if (params.restir_type == 4) { // bounded temporal reuse
+    auto curr_res = make_reservoir(
+        point, outgoing, scene, lights, rng, params.restir_candidates);
+    auto prev_res  = &state->reservoirs[ij];
+    if (prev_res->weight == 0.0f ||
+        prev_res->num_candidates >= 4 * curr_res.num_candidates) {
+      state->reservoirs[ij] = curr_res;
+    } else {
+      if (state->samples[ij] >= 8) {
+        // set breakpoint here for stepping only samples >= 8
+        hit = false;
+      }
+      state->reservoirs[ij] = combine_reservoirs_biased(
+          point, outgoing, {&curr_res, prev_res}, rng, &chosen_idx);
+    }
+    reservoir = state->reservoirs[ij];
+  }
 
   auto incoming = normalize(reservoir.lpoint.position - point.position);
 
-  int sample = state->samples[ij];
+  int sample = state->samples[ij] % 8;
   state->weights[sample][ij]    =
       {reservoir.weight, reservoir.weight, reservoir.weight, 1};
   state->visibility[sample][ij] = {255, 0, 0, 255};
