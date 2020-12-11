@@ -1911,7 +1911,8 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
       std::string filename = params.base_filename + "_v" + number + ".png";
       save_image(filename, state->visibility[i], error);
     }
-    if (params.restir_type == 1) {
+    if (params.restir_type == 1 || params.restir_type == 4 ||
+        params.restir_type == 6) {
       for (int i = 0; i < 8; i++) {
         std::string number = std::to_string(i);
         std::string filename = params.base_filename + "_c" + number + ".png";

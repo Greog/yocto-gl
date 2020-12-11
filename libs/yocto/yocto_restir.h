@@ -413,6 +413,9 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     }
     reservoir = state->reservoirs[ij];
   }
+  else {
+    assert(0 && "Invalid restir_type");
+  }
 
   auto incoming = normalize(reservoir.lpoint.position - point.position);
 
@@ -438,7 +441,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (!is_point_visible(
         point.position, reservoir.lpoint.position, scene, bvh)) {
     state->visibility[sample][ij] = {0, 0, 0, 255};
-    // state->reservoirs[ij].weight = 0.0f;
+    // state->reservoirs[ij] = {};
     return radiance;
   }
 
