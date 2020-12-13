@@ -491,6 +491,7 @@ struct shading_point {
   vec3f      position = {};
   vec3f      normal   = {};
   vec3f      emission = {};
+  vec3f      outgoing = {};
   trace_bsdf bsdf     = {};
   // float opacity = 1;
 };
