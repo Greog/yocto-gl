@@ -65,6 +65,63 @@ static float geometric_term(const vec3f& position, const vec3f& lposition,
   return abs(dot(lnormal, -incoming)) / distance_squared(position, lposition);
 }
 
+static vec3f shade_point(const shading_point& point,
+    const restir_reservoir& reservoir, const vec3f& outgoing,
+    const vec3f& incoming) {
+  vec3f bsdfcos = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
+  float gterm = geometric_term(
+      point.position, reservoir.lpoint.position, reservoir.lpoint.normal, incoming);
+  return reservoir.weight * reservoir.lpoint.emission * bsdfcos * gterm;
+}
+
+float eval_p_hat_q_novis(const shading_point& point, const light_point& lpoint) {
+  vec3f incoming = normalize(lpoint.position - point.position);
+  vec3f bsdfcos  = eval_bsdfcos(
+      point.bsdf, point.normal, point.outgoing, incoming);
+  float gterm    = geometric_term(
+      point.position, lpoint.position, lpoint.normal, incoming);
+  float p_hat_q  = max(bsdfcos * lpoint.emission) * gterm;
+  return p_hat_q;
+}
+
+float eval_p_hat_q_vis(const shading_point& point, const light_point& lpoint,
+                      const trace_scene* scene, const trace_bvh* bvh) {
+  if (!is_point_visible(point.position, lpoint.position, scene, bvh)) {
+    return 0.0f;
+  }
+  return eval_p_hat_q_novis(point, lpoint);
+}
+
+static restir_reservoir make_reservoir(const shading_point& point,
+    const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
+    rng_state& rng, int num_candidates) {
+  restir_reservoir res           = {};
+  float            w_sum         = 0.0f;
+  float            sampled_p_hat = 0.0f;
+
+  for (int i = 0; i < num_candidates; i++) {
+    auto [candidate, candidate_pdf] = sample_area_lights(
+        scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
+    float p_hat = eval_p_hat_q_novis(point, candidate);
+    float w     = p_hat / candidate_pdf;
+
+    w_sum += w;
+    res.num_candidates += 1;
+    if (w == 0.0f) { continue; }
+    if (rand1f(rng) < (w / w_sum)) {
+      res.lpoint    = candidate;
+      sampled_p_hat = p_hat;
+    }
+  }
+
+  res.point = point;
+  if (sampled_p_hat != 0.0f) {
+    res.weight = (1.0f / sampled_p_hat) * (1.0f / num_candidates) * w_sum;
+  }
+
+  return res;
+}
+
 static restir_reservoir make_reservoir_vis(const shading_point& point,
     const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
     rng_state& rng, int num_candidates, const trace_bvh* bvh) {
@@ -75,18 +132,8 @@ static restir_reservoir make_reservoir_vis(const shading_point& point,
   for (int i = 0; i < num_candidates; i++) {
     auto [candidate, candidate_pdf] = sample_area_lights(
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
-    vec3f incoming   = normalize(candidate.position - point.position);
-    vec3f bsdfcos    = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float gterm      = geometric_term(
-      point.position, candidate.position, candidate.normal, incoming);
-    float visibility =
-        is_point_visible(point.position, candidate.position, scene, bvh) ?
-          1.0f
-        :
-          0.0f;
-    float p_hat      = max(bsdfcos * candidate.emission) * gterm * visibility;
-    float w          = p_hat / candidate_pdf;
-    // if (w == 0.0f) { continue; }
+    float p_hat = eval_p_hat_q_vis(point, candidate, scene, bvh);
+    float w     = p_hat / candidate_pdf;
 
     w_sum += w;
     res.num_candidates += 1;
@@ -99,9 +146,39 @@ static restir_reservoir make_reservoir_vis(const shading_point& point,
   if (sampled_p_hat != 0.0f) {
     res.weight = (1.0f / sampled_p_hat) * (1.0f / num_candidates) * w_sum;
   }
-  // else {
-  //   res.num_candidates = 0;
-  // }
+
+  return res;
+}
+
+static restir_reservoir combine_reservoirs_biased(
+    const shading_point& point, const vec3f& outgoing,
+    const vector<restir_reservoir*>& reservoirs, rng_state& rng,
+    int* chosen_idx) {
+  restir_reservoir        res             = {};
+  float                   w_sum           = 0.0f;
+  restir_reservoir*       sampled_res     = nullptr;
+  float                   sampled_p_hat_q = 0.0f;
+
+  for (int i = 0; i < reservoirs.size(); i++) {
+    auto& r = reservoirs[i];
+    res.num_candidates += r->num_candidates;
+    if (r->weight == 0.0f) { continue; }
+    float p_hat_q = eval_p_hat_q_novis(point, r->lpoint);
+    float w       = p_hat_q * r->weight * r->num_candidates;
+    if (w == 0.0f) { continue; }
+
+    w_sum += w;
+    if (rand1f(rng) < (w / w_sum)) {
+      sampled_res     = r;
+      sampled_p_hat_q = p_hat_q;
+      (*chosen_idx)   = i;
+    }
+  }
+
+  if (sampled_res != nullptr) {
+    res.lpoint = sampled_res->lpoint;
+    res.weight = (1.0f / sampled_p_hat_q) * (1.0f / res.num_candidates) * w_sum;
+  }
 
   return res;
 }
@@ -117,30 +194,16 @@ static restir_reservoir combine_reservoirs_vis_biased(
 
   for (int i = 0; i < reservoirs.size(); i++) {
     auto& r = reservoirs[i];
-    // if (r->weight == 0.0f || !isfinite(r->weight)) { continue; }
-    if (r->weight == 0.0f) {
-      res.num_candidates += r->num_candidates;
-      continue;
-    }
-    vec3f incoming = normalize(r->lpoint.position - point.position);
-    vec3f bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float gterm    = geometric_term(
-        point.position, r->lpoint.position, r->lpoint.normal, incoming);
-    float visibility =
-        is_point_visible(point.position, r->lpoint.position, scene, bvh) ?
-          1.0f
-        :
-          0.0f;
-    float p_hat_q  = max(bsdfcos * r->lpoint.emission) * gterm * visibility;
-    float w        = p_hat_q * r->weight * r->num_candidates;
-    // if (w == 0.0f) { continue; }
+    res.num_candidates += r->num_candidates;
+    if (r->weight == 0.0f) { continue; }
+    float p_hat_q = eval_p_hat_q_vis(point, r->lpoint, scene, bvh);
+    float w       = p_hat_q * r->weight * r->num_candidates;
 
     w_sum += w;
-    res.num_candidates += r->num_candidates;
     if (rand1f(rng) < (w / w_sum)) {
       sampled_res     = r;
       sampled_p_hat_q = p_hat_q;
-      (*chosen_idx) = i;
+      (*chosen_idx)   = i;
     }
   }
 
@@ -148,9 +211,6 @@ static restir_reservoir combine_reservoirs_vis_biased(
     res.lpoint = sampled_res->lpoint;
     res.weight = (1.0f / sampled_p_hat_q) * (1.0f / res.num_candidates) * w_sum;
   }
-  // else {
-  //   res.num_candidates = 0;
-  // }
 
   return res;
 }
@@ -168,12 +228,8 @@ static restir_reservoir combine_reservoirs_unbiased(
     auto& r = reservoirs[i];
     res.num_candidates += r->num_candidates;
     if (r->weight == 0.0f) { continue; }
-    vec3f incoming = normalize(r->lpoint.position - point.position);
-    vec3f bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float gterm    = geometric_term(
-        point.position, r->lpoint.position, r->lpoint.normal, incoming);
-    float p_hat_q  = max(bsdfcos * r->lpoint.emission) * gterm;
-    float w        = p_hat_q * r->weight * r->num_candidates;
+    float p_hat_q = eval_p_hat_q_novis(point, r->lpoint);
+    float w       = p_hat_q * r->weight * r->num_candidates;
 
     w_sum += w;
     if (rand1f(rng) < (w / w_sum)) {
@@ -190,115 +246,17 @@ static restir_reservoir combine_reservoirs_unbiased(
   float Z = 0.0f;
   for (int i = 0; i < reservoirs.size(); i++) {
     auto& r         = reservoirs[i];
-    vec3f incoming  = normalize(res.lpoint.position - r->point.position);
-    vec3f bsdfcos   = eval_bsdfcos(r->point.bsdf, r->point.normal,
-                                  r->point.outgoing, incoming);
-    float gterm     = geometric_term(
-        r->point.position, res.lpoint.position, res.lpoint.normal, incoming);
-    float p_hat_q_i = max(bsdfcos * res.lpoint.emission) * gterm;
+    float p_hat_q_i = eval_p_hat_q_novis(r->point, res.lpoint);
     if (p_hat_q_i > 0.0f) {
       Z += r->num_candidates;
     }
   }
 
-  float m        = 1.0f / Z;
-  vec3f incoming = normalize(res.lpoint.position - res.point.position);
-  vec3f bsdfcos  = eval_bsdfcos(res.point.bsdf, res.point.normal,
-                                res.point.outgoing, incoming);
-  float gterm    = geometric_term(
-      res.point.position, res.lpoint.position, res.lpoint.normal, incoming);
-  float p_hat_q  = max(bsdfcos * res.lpoint.emission) * gterm;
-  res.weight = (1.0f / p_hat_q) * (m * w_sum);
+  float m       = 1.0f / Z;
+  float p_hat_q = eval_p_hat_q_novis(res.point, res.lpoint);
+  res.weight    = (1.0f / p_hat_q) * (m * w_sum);
 
   return res;
-}
-
-static restir_reservoir combine_reservoirs_biased(
-    const shading_point& point, const vec3f& outgoing,
-    const vector<restir_reservoir*>& reservoirs, rng_state& rng,
-    int* chosen_idx) {
-  restir_reservoir        res             = {};
-  float                   w_sum           = 0.0f;
-  restir_reservoir*       sampled_res     = nullptr;
-  float                   sampled_p_hat_q = 0.0f;
-
-  for (int i = 0; i < reservoirs.size(); i++) {
-    auto& r = reservoirs[i];
-    // if (r->weight == 0.0f || !isfinite(r->weight)) { continue; }
-    res.num_candidates += r->num_candidates;
-    if (r->weight == 0.0f) { continue; }
-    vec3f incoming = normalize(r->lpoint.position - point.position);
-    vec3f bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float gterm    = geometric_term(
-        point.position, r->lpoint.position, r->lpoint.normal, incoming);
-    float p_hat_q  = max(bsdfcos * r->lpoint.emission) * gterm;
-    float w        = p_hat_q * r->weight * r->num_candidates;
-    if (w == 0.0f) { continue; }
-
-    w_sum += w;
-    // res.num_candidates += r->num_candidates;
-    if (rand1f(rng) < (w / w_sum)) {
-      sampled_res     = r;
-      sampled_p_hat_q = p_hat_q;
-      (*chosen_idx) = i;
-    }
-  }
-
-  if (sampled_res != nullptr) {
-    res.lpoint = sampled_res->lpoint;
-    res.weight = (1.0f / sampled_p_hat_q) * (1.0f / res.num_candidates) * w_sum;
-  }
-  // else {
-  //   res.num_candidates = 0;
-  // }
-
-  return res;
-}
-
-static restir_reservoir make_reservoir(const shading_point& point,
-    const vec3f& outgoing, const trace_scene* scene, const trace_lights* lights,
-    rng_state& rng, int num_candidates) {
-  restir_reservoir res           = {};
-  float            w_sum         = 0.0f;
-  float            sampled_p_hat = 0.0f;
-
-  for (int i = 0; i < num_candidates; i++) {
-    auto [candidate, candidate_pdf] = sample_area_lights(
-        scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
-    vec3f incoming = normalize(candidate.position - point.position);
-    vec3f bsdfcos  = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-    float gterm    = geometric_term(
-      point.position, candidate.position, candidate.normal, incoming);
-    float p_hat    = max(bsdfcos * candidate.emission) * gterm;
-    float w        = p_hat / candidate_pdf;
-
-    w_sum += w;
-    res.num_candidates += 1;
-    if (w == 0.0f) { continue; }
-    if (rand1f(rng) < (w / w_sum)) {
-      res.lpoint = candidate;
-      sampled_p_hat = p_hat;
-    }
-  }
-
-  res.point  = point;
-  if (sampled_p_hat != 0.0f) {
-    res.weight = (1.0f / sampled_p_hat) * (1.0f / num_candidates) * w_sum;
-  }
-  // else {
-  //   res.num_candidates = 0;
-  // }
-
-  return res;
-}
-
-static vec3f shade_point(const shading_point& point,
-    const restir_reservoir& reservoir, const vec3f& outgoing,
-    const vec3f& incoming) {
-  vec3f bsdfcos = eval_bsdfcos(point.bsdf, point.normal, outgoing, incoming);
-  float gterm = geometric_term(
-      point.position, reservoir.lpoint.position, reservoir.lpoint.normal, incoming);
-  return reservoir.weight * reservoir.lpoint.emission * bsdfcos * gterm;
 }
 
 static vec4f trace_direct(const trace_scene* scene, const trace_bvh* bvh,
@@ -392,11 +350,11 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   // sample incoming direction
   restir_reservoir reservoir;
   int chosen_idx = 0;
-  if (params.restir_type == 0) { // no reuse
+  if (params.restir_type == 0) { // no-visiblity no-reuse
     reservoir = make_reservoir(
         point, outgoing, scene, lights, rng, params.restir_candidates);
   }
-  else if (params.restir_type == 1) { // temporal reuse
+  else if (params.restir_type == 1) { // no-visibility biased temporal reuse
     auto curr_res = make_reservoir(
         point, outgoing, scene, lights, rng, params.restir_candidates);
     auto prev_res  = &state->reservoirs[ij];
@@ -451,11 +409,11 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     }
     reservoir = state->reservoirs[ij];
   }
-  else if (params.restir_type == 5) { // p_hat with visibility no reuse
+  else if (params.restir_type == 5) { // visibility no-reuse
     reservoir = make_reservoir_vis(point, outgoing, scene, lights, rng,
                                    params.restir_candidates, bvh);
   }
-  else if (params.restir_type == 6) { // p_hat with visibility temporal reuse
+  else if (params.restir_type == 6) { // visibility biased temporal reuse
     auto curr_res = make_reservoir_vis(point, outgoing, scene, lights, rng,
                                        params.restir_candidates, bvh);
     auto prev_res  = &state->reservoirs[ij];
@@ -471,7 +429,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     }
     reservoir = state->reservoirs[ij];
   }
-  else if (params.restir_type == 7) { // temporal unbiased
+  else if (params.restir_type == 7) { // no-visiblity unbiased temporal reuse
     auto curr_res = make_reservoir(point, outgoing, scene, lights, rng,
                                    params.restir_candidates);
     auto prev_res  = &state->reservoirs[ij];
