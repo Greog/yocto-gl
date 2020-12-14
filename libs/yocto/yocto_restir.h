@@ -74,7 +74,8 @@ static vec3f shade_point(const shading_point& point,
   return reservoir.weight * reservoir.lpoint.emission * bsdfcos * gterm;
 }
 
-float eval_p_hat_q_novis(const shading_point& point, const light_point& lpoint) {
+static float eval_p_hat_q_novis(const shading_point& point,
+                                const light_point& lpoint) {
   vec3f incoming = normalize(lpoint.position - point.position);
   vec3f bsdfcos  = eval_bsdfcos(
       point.bsdf, point.normal, point.outgoing, incoming);
@@ -84,8 +85,9 @@ float eval_p_hat_q_novis(const shading_point& point, const light_point& lpoint) 
   return p_hat_q;
 }
 
-float eval_p_hat_q_vis(const shading_point& point, const light_point& lpoint,
-                      const trace_scene* scene, const trace_bvh* bvh) {
+static float eval_p_hat_q_vis(const shading_point& point,
+                              const light_point& lpoint,
+                              const trace_scene* scene, const trace_bvh* bvh) {
   if (!is_point_visible(point.position, lpoint.position, scene, bvh)) {
     return 0.0f;
   }
@@ -134,15 +136,18 @@ static restir_reservoir make_reservoir_vis(const shading_point& point,
         scene, lights, rand1f(rng), rand1f(rng), rand2f(rng));
     float p_hat = eval_p_hat_q_vis(point, candidate, scene, bvh);
     float w     = p_hat / candidate_pdf;
+    if (w == 0.0f) { continue; }
+    assert(isfinite(w) && "'candidate_pdf' shall be nonzero");
 
     w_sum += w;
-    res.num_candidates += 1;
     if (rand1f(rng) < (w / w_sum)) {
       res.lpoint = candidate;
       sampled_p_hat = p_hat;
     }
   }
 
+  res.num_candidates = num_candidates;
+  res.point = point;
   if (sampled_p_hat != 0.0f) {
     res.weight = (1.0f / sampled_p_hat) * (1.0f / num_candidates) * w_sum;
   }
@@ -230,6 +235,7 @@ static restir_reservoir combine_reservoirs_unbiased(
     if (r->weight == 0.0f) { continue; }
     float p_hat_q = eval_p_hat_q_novis(point, r->lpoint);
     float w       = p_hat_q * r->weight * r->num_candidates;
+    if (w == 0.0f) { continue; }
 
     w_sum += w;
     if (rand1f(rng) < (w / w_sum)) {
@@ -254,7 +260,56 @@ static restir_reservoir combine_reservoirs_unbiased(
 
   float m       = 1.0f / Z;
   float p_hat_q = eval_p_hat_q_novis(res.point, res.lpoint);
-  res.weight    = (1.0f / p_hat_q) * (m * w_sum);
+  if (Z != 0.0f && p_hat_q != 0.0f) {
+    res.weight = (1.0f / p_hat_q) * (m * w_sum);
+  }
+
+  return res;
+}
+
+static restir_reservoir combine_reservoirs_vis_unbiased(
+    const shading_point& point, const vec3f& outgoing,
+    const vector<restir_reservoir*>& reservoirs, rng_state& rng,
+    int* chosen_idx, const trace_scene* scene, const trace_bvh* bvh) {
+  restir_reservoir        res             = {};
+  float                   w_sum           = 0.0f;
+  restir_reservoir*       sampled_res     = nullptr;
+  float                   sampled_p_hat_q = 0.0f;
+
+  for (int i = 0; i < reservoirs.size(); i++) {
+    auto& r = reservoirs[i];
+    res.num_candidates += r->num_candidates;
+    if (r->weight == 0.0f) { continue; }
+    float p_hat_q = eval_p_hat_q_vis(point, r->lpoint, scene, bvh);
+    float w       = p_hat_q * r->weight * r->num_candidates;
+    if (w == 0.0f) { continue; }
+
+    w_sum += w;
+    if (rand1f(rng) < (w / w_sum)) {
+      sampled_res     = r;
+      sampled_p_hat_q = p_hat_q;
+      (*chosen_idx)   = i;
+    }
+  }
+
+  res.point  = point;
+  if (sampled_res == nullptr) { return res; }
+  res.lpoint = sampled_res->lpoint;
+
+  float Z = 0.0f;
+  for (int i = 0; i < reservoirs.size(); i++) {
+    auto r          = reservoirs[i];
+    float p_hat_q_i = eval_p_hat_q_vis(r->point, res.lpoint, scene, bvh);
+    if (p_hat_q_i > 0.0f) {
+      Z += r->num_candidates;
+    }
+  }
+
+  float m       = 1.0f / Z;
+  float p_hat_q = eval_p_hat_q_vis(res.point, res.lpoint, scene, bvh);
+  if (Z != 0.0f && p_hat_q != 0.0f) {
+    res.weight = (1.0f / p_hat_q) * (m * w_sum);
+  }
 
   return res;
 }
@@ -363,7 +418,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     } else {
       if (state->samples[ij] >= 8) {
         // set breakpoint here for stepping only samples >= 8
-        hit = false;
+        nop();
       }
       state->reservoirs[ij] = combine_reservoirs_biased(
           point, outgoing, {&curr_res, prev_res}, rng, &chosen_idx);
@@ -402,7 +457,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     } else {
       if (state->samples[ij] >= 8) {
         // set breakpoint here for stepping only samples >= 8
-        hit = false;
+        nop();
       }
       state->reservoirs[ij] = combine_reservoirs_biased(
           point, outgoing, {&curr_res, prev_res}, rng, &chosen_idx);
@@ -422,7 +477,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     } else {
       if (state->samples[ij] >= 8) {
         // set breakpoint here for stepping only samples >= 8
-        hit = false;
+        nop();
       }
       state->reservoirs[ij] = combine_reservoirs_vis_biased(
           point, outgoing, {&curr_res, prev_res}, rng, &chosen_idx, scene, bvh);
@@ -438,6 +493,19 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     } else {
       state->reservoirs[ij] = combine_reservoirs_unbiased(
           point, outgoing, {&curr_res, prev_res}, rng, &chosen_idx);
+    }
+    reservoir = state->reservoirs[ij];
+  }
+  else if (params.restir_type == 8) { // visibility unbiased temporal reuse
+    auto curr_res = make_reservoir_vis(point, outgoing, scene, lights, rng,
+                                       params.restir_candidates, bvh);
+    auto prev_res  = state->reservoirs[ij];
+    if (prev_res.num_candidates == 0) {
+      state->reservoirs[ij] = curr_res;
+    }
+    else {
+      state->reservoirs[ij] = combine_reservoirs_vis_unbiased(
+          point, outgoing, {&curr_res, &prev_res}, rng, &chosen_idx, scene, bvh);
     }
     reservoir = state->reservoirs[ij];
   }
