@@ -1,5 +1,8 @@
 #include <assert.h>
 
+// for breakpoint
+static void nop() {}
+
 static shading_point make_shading_point(const bvh_intersection& intersection,
     const vec3f& outgoing, const trace_scene* scene) {
   auto instance  = scene->instances[intersection.instance];
@@ -504,6 +507,10 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
       state->reservoirs[ij] = curr_res;
     }
     else {
+      if (state->samples[ij] >= 8) {
+        // set breakpoint here for stepping only samples >= 8
+        nop();
+      }
       state->reservoirs[ij] = combine_reservoirs_vis_unbiased(
           point, outgoing, {&curr_res, &prev_res}, rng, &chosen_idx, scene, bvh);
     }
