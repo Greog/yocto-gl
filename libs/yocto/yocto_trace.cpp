@@ -1745,6 +1745,11 @@ void trace_sample(trace_state* state, const trace_scene* scene,
   if (params.sampler == trace_sampler_type::restir) {
     auto s = trace_restir(scene, bvh, lights, ray, ij, state, params);
     sample = {s.x, s.y, s.z, 1.0f};
+    if (!isfinite(xyz(sample))) sample = {0, 0, 0, sample.w};
+    if (max(sample) > params.clamp)
+      sample = sample * (params.clamp / max(sample));
+    state->render[ij] = sample;
+    return;
   } else {
     sample = sampler(scene, bvh, lights, ray, state->rngs[ij], params);
   }

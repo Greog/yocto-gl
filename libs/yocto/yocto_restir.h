@@ -185,6 +185,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     }
   }
 
+  // auto& reservoir = res; // reuse inactive
   auto& reservoir = state->reservoirs[ij];
   reservoir       = combine_reservoirs({reservoir, res}, point, outgoing, rng);
 
