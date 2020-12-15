@@ -24,7 +24,7 @@ static bool is_point_visible(const vec3f& position, const vec3f& point,
   auto shadow_ray          = ray3f{position, incoming};
   auto shadow_intersection = intersect_bvh(bvh, shadow_ray);
   if (!shadow_intersection.hit) {
-    printf("[warning] Shadow ray hitting nothing!\n");
+    // printf("[warning] Shadow ray hitting nothing!\n");
     return false;
   }
 
@@ -286,6 +286,7 @@ static restir_reservoir combine_reservoirs_vis_unbiased(
     float p_hat_q = eval_p_hat_q_vis(point, r->lpoint, scene, bvh);
     float w       = p_hat_q * r->weight * r->num_candidates;
     if (w == 0.0f) { continue; }
+    assert(isfinite(w) && "'candidate_pdf' shall be nonzero");
 
     w_sum += w;
     if (rand1f(rng) < (w / w_sum)) {
@@ -513,6 +514,22 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
       }
       state->reservoirs[ij] = combine_reservoirs_vis_unbiased(
           point, outgoing, {&curr_res, &prev_res}, rng, &chosen_idx, scene, bvh);
+    }
+    reservoir = state->reservoirs[ij];
+  }
+  else if (params.restir_type == 9) { // clamped
+    auto curr_res = make_reservoir(point, outgoing, scene, lights, rng,
+                                   params.restir_candidates);
+    auto prev_res = state->reservoirs[ij];
+    if (prev_res.num_candidates == 0) {
+      state->reservoirs[ij] = curr_res;
+    }
+    else {
+      if (prev_res.num_candidates > 5 * curr_res.num_candidates) {
+        prev_res.num_candidates = curr_res.num_candidates * 5;
+      }
+      state->reservoirs[ij] = combine_reservoirs_biased(
+          point, outgoing, {&curr_res, &prev_res}, rng, &chosen_idx);
     }
     reservoir = state->reservoirs[ij];
   }
