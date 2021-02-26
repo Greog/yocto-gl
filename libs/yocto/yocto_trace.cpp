@@ -1754,6 +1754,8 @@ void trace_sample(trace_state* state, const trace_scene* scene,
     sample = sample * (params.clamp / max(sample));
   state->accumulation[ij] += sample;
   state->samples[ij] += 1;
+  // state->accumulation[ij] = sample;
+  // state->samples[ij] = 1;
   auto radiance = state->accumulation[ij].w != 0
                       ? xyz(state->accumulation[ij]) / state->accumulation[ij].w
                       : zero3f;
@@ -1773,6 +1775,7 @@ void init_state(trace_state* state, const trace_scene* scene,
   state->accumulation.assign(image_size, zero4f);
   state->samples.assign(image_size, 0);
   state->rngs.assign(image_size, {});
+  state->tmp.assign(image_size, {});
   auto rng_ = make_rng(1301081);
   for (auto& rng : state->rngs) {
     rng = make_rng(params.seed, rand1i(rng_, 1 << 31) / 2 + 1);
@@ -1880,7 +1883,10 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
 
   for (auto sample = 0; sample < params.samples; sample++) {
     if (progress_cb) progress_cb("trace image", sample, params.samples);
-    if (params.noparallel) {
+    if (params.restir_type == "spatial") {
+      trace_restir_spatial(state, scene, camera, bvh, lights, params);
+    }
+    else if (params.noparallel) {
       for (auto j = 0; j < state->render.height(); j++) {
         for (auto i = 0; i < state->render.width(); i++) {
           trace_sample(state, scene, camera, bvh, lights, {i, j}, params);
@@ -1911,9 +1917,7 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
       std::string filename = params.base_filename + "_v" + number + ".png";
       save_image(filename, state->visibility[i], error);
     }
-    if (params.restir_type == 1 || params.restir_type == 4 ||
-        params.restir_type == 6 || params.restir_type == 7 ||
-        params.restir_type == 8) {
+    if (params.restir_type == "temporal") {
       for (int i = 0; i < 8; i++) {
         std::string number = std::to_string(i);
         std::string filename = params.base_filename + "_c" + number + ".png";

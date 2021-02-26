@@ -199,7 +199,11 @@ int main(int argc, const char* argv[]) {
       "Generate denoise feature images");
   add_option(cli, "--base-name", params.base_filename, "Debug base filename");
   add_option(cli, "--restir-type", params.restir_type,
-      "Temporal reuse in restir");
+      "Type of restir");
+  add_option(cli, "--restir-vis/--no-restir-vis", params.restir_vis,
+      "Visiblity is used.");
+  add_option(cli, "--restir-unbias/--no-restir-unbias", params.restir_unbias,
+      "Combine resrvoirs in the unbiased way");
   parse_cli(cli, argc, argv);
 
   // scene loading
