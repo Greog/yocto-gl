@@ -320,46 +320,29 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
                                    &chosen_idx, scene, bvh);
   }
   else if (params.restir_type == "temporal") {
+    // if (state->samples[ij] >= 8) { nop(); }
     auto curr_res = make_reservoir(params.restir_vis, point, scene, lights, rng,
                                    params.restir_candidates, bvh);
     auto prev_res = state->reservoirs[ij];
-    // removing this 'if' leads to thick lines in the floor
-    // if (prev_res.num_candidates == 0 ||
-    //     prev_res.weight == 0.0f) {
-    //   state->reservoirs[ij] = curr_res;
-    // }
-    // else if (curr_res.num_candidates == 0 ||
-    //          curr_res.weight == 0.0f) {
-    //   state->reservoirs[ij] = prev_res;
-    // }
-    if (prev_res.num_candidates == 0) {
-      state->reservoirs[ij] = curr_res;
-    }
-    else if (prev_res.weight == 0.0f ||
-             curr_res.weight == 0.0f) {
-      state->reservoirs[ij] = {};
-    }
-    // else {
-    //   if (state->samples[ij] >= 8) { nop(); }
-      // adding this 'if' leads to a better unbias-novis temporal restir
-      // if (!is_point_visible(point.position, curr_res.lpoint.position, scene, bvh)) {
-      //   curr_res.weight = 0.0f;
-      // }
-      // if (!is_point_visible(point.position, prev_res.lpoint.position, scene, bvh)) {
-      //   prev_res.weight = 0.0f;
-      // }
-    // if (!prev_res.num_candidates == 0) {
-    //   state->reservoirs[ij] = curr_res;
-    // }
-    else {
-      state->reservoirs[ij] = combine_reservoirs(
-          params.restir_vis, params.restir_unbias, point,
-          {&curr_res, &prev_res}, rng, &chosen_idx, scene, bvh);
-    }
+    std::vector<restir_reservoir*> reservoirs;
+    reservoirs.reserve(2);
 
-    if (state->reservoirs[ij].weight == 0.0f) {
-      state->reservoirs[ij] = {};
-    }
+    // if (!is_point_visible(point.position, curr_res.lpoint.position, scene, bvh)) {
+    //   curr_res.weight = 0.0f;
+    // }
+    // if (!is_point_visible(point.position, prev_res.lpoint.position, scene, bvh)) {
+    //   prev_res.weight = 0.0f;
+    // }
+    // if (curr_res.num_candidates > 0 || curr_res.weight > 0.0f) {
+      reservoirs.push_back(&curr_res);
+    // }
+    // if (prev_res.num_candidates > 0 || prev_res.weight > 0.0f) {
+      reservoirs.push_back(&prev_res);
+    // }
+
+    state->reservoirs[ij] = combine_reservoirs(
+        params.restir_vis, params.restir_unbias, point, reservoirs, rng,
+        &chosen_idx, scene, bvh);
     reservoir = state->reservoirs[ij];
   }
   else {
@@ -391,8 +374,8 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (!is_point_visible(
         point.position, reservoir.lpoint.position, scene, bvh)) {
     state->visibility[sample][ij] = {0, 0, 0, 255};
-    state->reservoirs[ij].weight = 0.0f;
-    state->reservoirs[ij].num_candidates = 0;
+    // state->reservoirs[ij].weight = 0.0f;
+    // state->reservoirs[ij].num_candidates = 0;
     return radiance;
   }
 
