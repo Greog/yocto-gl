@@ -189,33 +189,20 @@ static restir_reservoir combine_reservoirs(
   return res;
 }
 
-// pick at most 5 reservoirs in a square 10x10
-void choose_neighbours(trace_state* state, const vec2i& ij_base,
-                     std::vector<restir_reservoir*>& neighbours) {
+void pick_spatial_neighbours(trace_state* state, const vec2i& ij_base,
+                             std::vector<restir_reservoir*>& neighbours) {
   int radius       = 10;
   vec2i image_size = state->render.imsize();
   rng_state& rng   = state->rngs[ij_base];
 
   for (int i = 0; i < 5; i++) {
-    vec2i ij_offset;
-    ij_offset.x = rand1i(rng, radius);
-    ij_offset.y = rand1i(rng, radius);
-    if (ij_offset == vec2i{0, 0}) { continue; }
-    vec2i ij = ij_base + ij_offset;
-    if (ij.x < 0) {
-      ij.x = ij_base.x + radius + ij.x + 1;
-    }
-    else if (ij.x >= image_size.x) {
-      ij.x = (ij_base.x - radius) + (ij.x - image_size.x);
-    }
-    if (ij.y < 0) {
-      ij.y = ij_base.y + radius + ij.y + 1;
-    }
-    else if (ij.y >= image_size.y) {
-      ij.y = (ij_base.y - radius) + (ij.y - image_size.y);
+    vec2f ij_offset = sample_disk(rand2f(rng)) * radius;
+    vec2i ij = ij_base + vec2i{(int)ij_offset.x, (int)ij_offset.y};
+    if (ij.x < 0 || ij.y < 0 || ij.x >= image_size.x || ij.y >= image_size.y) {
+      continue;
     }
     restir_reservoir* r = &state->reservoirs[ij];
-    if (r->is_valid && r->num_candidates > 0) {
+    if (r->weight > 0.0f) {
       neighbours.push_back(r);
     }
   }
@@ -337,12 +324,23 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
                                    params.restir_candidates, bvh);
     auto prev_res = state->reservoirs[ij];
     // removing this 'if' leads to thick lines in the floor
-    if ((prev_res.num_candidates == 0) ||
-        (prev_res .weight == 0.0f)) {
+    // if (prev_res.num_candidates == 0 ||
+    //     prev_res.weight == 0.0f) {
+    //   state->reservoirs[ij] = curr_res;
+    // }
+    // else if (curr_res.num_candidates == 0 ||
+    //          curr_res.weight == 0.0f) {
+    //   state->reservoirs[ij] = prev_res;
+    // }
+    if (prev_res.num_candidates == 0) {
       state->reservoirs[ij] = curr_res;
     }
-    else {
-      if (state->samples[ij] >= 8) { nop(); }
+    else if (prev_res.weight == 0.0f ||
+             curr_res.weight == 0.0f) {
+      state->reservoirs[ij] = {};
+    }
+    // else {
+    //   if (state->samples[ij] >= 8) { nop(); }
       // adding this 'if' leads to a better unbias-novis temporal restir
       // if (!is_point_visible(point.position, curr_res.lpoint.position, scene, bvh)) {
       //   curr_res.weight = 0.0f;
@@ -350,14 +348,18 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
       // if (!is_point_visible(point.position, prev_res.lpoint.position, scene, bvh)) {
       //   prev_res.weight = 0.0f;
       // }
+    // if (!prev_res.num_candidates == 0) {
+    //   state->reservoirs[ij] = curr_res;
+    // }
+    else {
       state->reservoirs[ij] = combine_reservoirs(
           params.restir_vis, params.restir_unbias, point,
           {&curr_res, &prev_res}, rng, &chosen_idx, scene, bvh);
     }
 
-    // if (state->reservoirs[ij].weight == 0.0f) {
-    //   state->reservoirs[ij] = {};
-    // }
+    if (state->reservoirs[ij].weight == 0.0f) {
+      state->reservoirs[ij] = {};
+    }
     reservoir = state->reservoirs[ij];
   }
   else {
@@ -373,6 +375,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   state->chosen[sample][ij]     = {255, 0, 0, 255};
 
   // check weight
+  assert(isfinite(reservoir.weight) && "'reservoir.weight' must be finite");
   if (reservoir.weight == 0.0f || !isfinite(reservoir.weight)) {
     return radiance; 
   }
@@ -388,8 +391,8 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (!is_point_visible(
         point.position, reservoir.lpoint.position, scene, bvh)) {
     state->visibility[sample][ij] = {0, 0, 0, 255};
-    // state->reservoirs[ij] = {};
-    // state->reservoirs[ij].weight = 0.0f;
+    state->reservoirs[ij].weight = 0.0f;
+    state->reservoirs[ij].num_candidates = 0;
     return radiance;
   }
 
@@ -437,6 +440,10 @@ static void trace_restir_spatial(
       state->reservoirs[ij] = make_reservoir(
           params.restir_vis, point, scene, lights, state->rngs[ij],
           params.restir_candidates, bvh);
+      // auto r = &state->reservoirs[ij];
+      // if (!is_point_visible(point.position, r->lpoint.position, scene, bvh)) {
+      //   r->weight = 0.0f;
+      // }
     }
   }
 
@@ -448,17 +455,13 @@ static void trace_restir_spatial(
       std::vector<restir_reservoir*> reservoirs;
       reservoirs.reserve(6);
       restir_reservoir* curr_res = &state->reservoirs[ij];
-      if (curr_res->is_valid && curr_res->num_candidates > 0) {
-        reservoirs.push_back(curr_res);
-      }
-      choose_neighbours(state, ij, reservoirs);
+      reservoirs.push_back(curr_res);
+      pick_spatial_neighbours(state, ij, reservoirs);
       // combine reservoirs
       int chosen_idx = -1;
-      if (reservoirs.size() > 0) {
-        state->tmp[ij] = combine_reservoirs(
-            params.restir_vis, params.restir_unbias, curr_res->point,
-            reservoirs, state->rngs[ij], &chosen_idx, scene, bvh);
-      }
+      state->tmp[ij] = combine_reservoirs(
+          params.restir_vis, params.restir_unbias, curr_res->point,
+          reservoirs, state->rngs[ij], &chosen_idx, scene, bvh);
     }
   }
   std::swap(state->tmp, state->reservoirs);
@@ -467,10 +470,8 @@ static void trace_restir_spatial(
   for (auto j = 0; j < state->render.height(); j++) {
     for (auto i = 0; i < state->render.width(); i++) {
       auto ij = vec2i{i, j};
-      auto& reservoir = state->reservoirs[ij];
-      if (reservoir.is_valid         &&
-          reservoir.weight > 0.0f    &&
-          isfinite(reservoir.weight) &&
+        auto& reservoir = state->reservoirs[ij];
+      if (reservoir.weight > 0.0f &&
           is_point_visible(reservoir.point.position,
                            reservoir.lpoint.position, scene, bvh)) {
         auto incoming = normalize(
@@ -479,7 +480,7 @@ static void trace_restir_spatial(
             reservoir.point, reservoir, reservoir.point.outgoing, incoming);
         assert(isfinite(radiance));
         state->accumulation[ij] += 
-            {radiance.x, radiance.y, radiance.z, 1.0f};
+              {radiance.x, radiance.y, radiance.z, 1.0f};
       }
       state->samples[ij] += 1;
       state->render[ij] = state->accumulation[ij] / state->samples[ij];
