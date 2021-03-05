@@ -1,8 +1,5 @@
 #include <assert.h>
 
-// for breakpoint
-static void nop() {}
-
 static shading_point make_shading_point(const bvh_intersection& intersection,
     const vec3f& outgoing, const trace_scene* scene) {
   auto instance  = scene->instances[intersection.instance];
@@ -120,7 +117,7 @@ static restir_reservoir make_reservoir(bool visibility,
     res.num_candidates += 1;
     if (w <= 0.0f) { continue; }
     w_sum += w;
-    if (rand1f(rng) < (w / w_sum)) {
+    if (rand1f(rng) <= (w / w_sum)) {
       res.lpoint    = candidate;
       sampled_p_hat = p_hat;
     }
@@ -155,7 +152,7 @@ static restir_reservoir combine_reservoirs(
     if (w <= 0.0f) { continue; }
 
     w_sum += w;
-    if (rand1f(rng) < (w / w_sum)) {
+    if (rand1f(rng) <= (w / w_sum)) {
       sampled_res     = r;
       sampled_p_hat_q = p_hat_q;
     }
@@ -292,7 +289,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
   if (is_delta(point.bsdf)) return radiance;
 
   // sample incoming direction
-  restir_reservoir reservoir;
+  restir_reservoir& reservoir = state->reservoirs[ij];
 
   if (params.restir_type == "noreuse") {
     reservoir = make_reservoir(params.restir_vis, point, scene, lights, rng,
@@ -324,11 +321,9 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     reservoirs.reserve(2);
     reservoirs.push_back(&curr_res);
     reservoirs.push_back(&prev_res);
-
-    state->reservoirs[ij] = combine_reservoirs(
+    reservoir = combine_reservoirs(
         params.restir_vis, params.restir_unbias, point, reservoirs, rng,
         scene, bvh);
-    reservoir = state->reservoirs[ij];
   }
   else {
     assert(0 && "Invalid restir_type");
@@ -386,12 +381,12 @@ static void trace_restir_spatial(
       // handle delta
       if (is_delta(point.bsdf)) { continue; }
       // initial candidate
-      state->reservoirs[ij] = make_reservoir(
+      restir_reservoir& r = state->reservoirs[ij];
+      r = make_reservoir(
           params.restir_vis, point, scene, lights, state->rngs[ij],
           params.restir_candidates, bvh);
-      auto r = &state->reservoirs[ij];
-      if (!is_point_visible(point.position, r->lpoint.position, scene, bvh)) {
-        r->weight = 0.0f;
+      if (!is_point_visible(point.position, r.lpoint.position, scene, bvh)) {
+        r.weight = 0.0f;
       }
     }
   }
