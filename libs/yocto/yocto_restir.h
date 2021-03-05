@@ -320,25 +320,16 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
                                    &chosen_idx, scene, bvh);
   }
   else if (params.restir_type == "temporal") {
-    // if (state->samples[ij] >= 8) { nop(); }
     auto curr_res = make_reservoir(params.restir_vis, point, scene, lights, rng,
                                    params.restir_candidates, bvh);
     auto prev_res = state->reservoirs[ij];
+    if (!is_point_visible(point.position, curr_res.lpoint.position, scene, bvh)) {
+      curr_res.weight = 0.0f;
+    }
     std::vector<restir_reservoir*> reservoirs;
     reservoirs.reserve(2);
-
-    // if (!is_point_visible(point.position, curr_res.lpoint.position, scene, bvh)) {
-    //   curr_res.weight = 0.0f;
-    // }
-    // if (!is_point_visible(point.position, prev_res.lpoint.position, scene, bvh)) {
-    //   prev_res.weight = 0.0f;
-    // }
-    // if (curr_res.num_candidates > 0 || curr_res.weight > 0.0f) {
-      reservoirs.push_back(&curr_res);
-    // }
-    // if (prev_res.num_candidates > 0 || prev_res.weight > 0.0f) {
-      reservoirs.push_back(&prev_res);
-    // }
+    reservoirs.push_back(&curr_res);
+    reservoirs.push_back(&prev_res);
 
     state->reservoirs[ij] = combine_reservoirs(
         params.restir_vis, params.restir_unbias, point, reservoirs, rng,
