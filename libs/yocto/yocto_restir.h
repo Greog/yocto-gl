@@ -201,10 +201,6 @@ void pick_spatial_neighbours(trace_state* state, const vec2i& ij_base,
     if (ij.x < 0 || ij.y < 0 || ij.x >= image_size.x || ij.y >= image_size.y) {
       continue;
     }
-    restir_reservoir* r = &state->reservoirs[ij];
-    if (r->weight > 0.0f) {
-      neighbours.push_back(r);
-    }
   }
 }
 
@@ -414,10 +410,10 @@ static void trace_restir_spatial(
       state->reservoirs[ij] = make_reservoir(
           params.restir_vis, point, scene, lights, state->rngs[ij],
           params.restir_candidates, bvh);
-      // auto r = &state->reservoirs[ij];
-      // if (!is_point_visible(point.position, r->lpoint.position, scene, bvh)) {
-      //   r->weight = 0.0f;
-      // }
+      auto r = &state->reservoirs[ij];
+      if (!is_point_visible(point.position, r->lpoint.position, scene, bvh)) {
+        r->weight = 0.0f;
+      }
     }
   }
 

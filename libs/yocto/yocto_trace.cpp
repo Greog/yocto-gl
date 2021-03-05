@@ -1883,7 +1883,8 @@ image<vec4f> trace_image(const trace_scene* scene, const trace_camera* camera,
 
   for (auto sample = 0; sample < params.samples; sample++) {
     if (progress_cb) progress_cb("trace image", sample, params.samples);
-    if (params.restir_type == "spatial") {
+    if (params.sampler == trace_sampler_type::restir &&
+        params.restir_type == "spatial") {
       trace_restir_spatial(state, scene, camera, bvh, lights, params);
     }
     else if (params.noparallel) {
