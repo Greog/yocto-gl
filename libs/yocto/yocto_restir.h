@@ -136,7 +136,7 @@ static restir_reservoir make_reservoir(bool visibility,
 static restir_reservoir combine_reservoirs(
     bool visibility, bool unbiased, const shading_point& point,
     const vector<restir_reservoir*>& reservoirs, rng_state& rng,
-    int* chosen_idx, const trace_scene* scene, const trace_bvh* bvh) {
+    const trace_scene* scene, const trace_bvh* bvh) {
   restir_reservoir        res             = {};
   float                   w_sum           = 0.0f;
   restir_reservoir*       sampled_res     = nullptr;
@@ -158,7 +158,6 @@ static restir_reservoir combine_reservoirs(
     if (rand1f(rng) < (w / w_sum)) {
       sampled_res     = r;
       sampled_p_hat_q = p_hat_q;
-      (*chosen_idx)   = i;
     }
   }
 
@@ -294,7 +293,6 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
 
   // sample incoming direction
   restir_reservoir reservoir;
-  int chosen_idx = 0;
 
   if (params.restir_type == "noreuse") {
     reservoir = make_reservoir(params.restir_vis, point, scene, lights, rng,
@@ -313,7 +311,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
                              bvh);
     reservoir = combine_reservoirs(params.restir_vis, params.restir_unbias,
                                    point, {&r1, &r2, &r3, &r4, &r5}, rng,
-                                   &chosen_idx, scene, bvh);
+                                   scene, bvh);
   }
   else if (params.restir_type == "temporal") {
     auto curr_res = make_reservoir(params.restir_vis, point, scene, lights, rng,
@@ -329,20 +327,12 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
 
     state->reservoirs[ij] = combine_reservoirs(
         params.restir_vis, params.restir_unbias, point, reservoirs, rng,
-        &chosen_idx, scene, bvh);
+        scene, bvh);
     reservoir = state->reservoirs[ij];
   }
   else {
     assert(0 && "Invalid restir_type");
   }
-
-  auto incoming = normalize(reservoir.lpoint.position - point.position);
-
-  int sample = state->samples[ij] % 8;
-  state->weights[sample][ij]    =
-      {reservoir.weight, reservoir.weight, reservoir.weight, 1};
-  state->visibility[sample][ij] = {255, 0, 0, 255};
-  state->chosen[sample][ij]     = {255, 0, 0, 255};
 
   // check weight
   assert(isfinite(reservoir.weight) && "'reservoir.weight' must be finite");
@@ -350,26 +340,16 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     return radiance; 
   }
 
-  if (chosen_idx == 0) {
-    state->chosen[sample][ij] = {0, 0, 0, 255};
-  }
-  else {
-    state->chosen[sample][ij] = {255, 255, 255, 255};
-  }
-
   // check visibility
-  if (!is_point_visible(
-        point.position, reservoir.lpoint.position, scene, bvh)) {
-    state->visibility[sample][ij] = {0, 0, 0, 255};
-    // state->reservoirs[ij].weight = 0.0f;
-    // state->reservoirs[ij].num_candidates = 0;
+  if (!is_point_visible(point.position, reservoir.lpoint.position, scene, bvh)) {
     return radiance;
   }
 
-  state->visibility[sample][ij] = {255, 255, 255, 255};
-
+  // shade
+  auto incoming = normalize(reservoir.lpoint.position - point.position);
   radiance += shade_point(point, reservoir, outgoing, incoming);
 
+  // done
   return radiance;
 }
 
@@ -381,7 +361,6 @@ static void trace_restir_spatial(
   for (auto j = 0; j < state->render.height(); j++) {
     for (auto i = 0; i < state->render.width(); i++) {
       vec2i ij = vec2i{i, j};
-      state->reservoirs[ij].is_valid = false;
       // trace_sample
       auto ray = sample_camera(camera, ij, state->render.imsize(),
           rand2f(state->rngs[ij]), rand2f(state->rngs[ij]),
@@ -428,10 +407,9 @@ static void trace_restir_spatial(
       reservoirs.push_back(curr_res);
       pick_spatial_neighbours(state, ij, reservoirs);
       // combine reservoirs
-      int chosen_idx = -1;
       state->tmp[ij] = combine_reservoirs(
           params.restir_vis, params.restir_unbias, curr_res->point,
-          reservoirs, state->rngs[ij], &chosen_idx, scene, bvh);
+          reservoirs, state->rngs[ij], scene, bvh);
     }
   }
   std::swap(state->tmp, state->reservoirs);

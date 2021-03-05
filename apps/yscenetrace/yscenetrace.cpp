@@ -197,7 +197,6 @@ int main(int argc, const char* argv[]) {
   add_option(cli, "scene", filename, "Scene filename", true);
   add_option(cli, "--denoise-features,-d", feature_images,
       "Generate denoise feature images");
-  add_option(cli, "--base-name", params.base_filename, "Debug base filename");
   add_option(cli, "--restir-type", params.restir_type,
       "Type of restir");
   add_option(cli, "--restir-vis/--no-restir-vis", params.restir_vis,

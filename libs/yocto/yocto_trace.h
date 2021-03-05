@@ -397,7 +397,6 @@ struct trace_params {
   int                   pratio            = 8;
   float                 exposure          = 0;
   int                   restir_candidates = 8;
-  std::string           base_filename     = {};
   std::string           restir_type       = {};
   bool                  restir_vis        = false;
   bool                  restir_unbias     = false;
@@ -503,7 +502,6 @@ struct restir_reservoir {
   light_point   lpoint         = {};
   shading_point point          = {};
   float         weight         = 0.0f;
-  bool          is_valid       = true;
 };
 
 // [experimental] Asynchronous state
@@ -513,14 +511,9 @@ struct trace_state {
   image<int>              samples      = {};
   image<rng_state>        rngs         = {};
   image<restir_reservoir> reservoirs   = {};
+  image<restir_reservoir> tmp          = {};
   future<void>            worker       = {};  // async
   atomic<bool>            stop         = {};  // async
-
-  // restir debug
-  image<vec4f> weights[8]    = {};
-  image<vec4b> visibility[8] = {};
-  image<vec4b> chosen[8]     = {};
-  image<restir_reservoir> tmp = {};
 };
 
 // [experimental] Callback used to report partially computed image
