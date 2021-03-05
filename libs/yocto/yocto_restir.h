@@ -176,10 +176,9 @@ static restir_reservoir combine_reservoirs(
 
     float m       = 1.0f / Z;
     float p_hat_q = eval_p_hat_q(res.point, res.lpoint, scene, bvh);
-    if (Z != 0.0f && p_hat_q != 0.0f) {
+    if (Z > 0.0f && p_hat_q > 0.0f) {
       res.weight = (1.0f / p_hat_q) * (m * w_sum);
     }
-    // else what?
   }
 
   return res;
@@ -353,80 +352,77 @@ static void trace_restir_spatial(
     const trace_bvh* bvh, const trace_lights* lights,
     const trace_params& params) {
   // # initial candidates
-  for (auto j = 0; j < state->render.height(); j++) {
-    for (auto i = 0; i < state->render.width(); i++) {
-      vec2i ij = vec2i{i, j};
-      // trace_sample
-      auto ray = sample_camera(camera, ij, state->render.imsize(),
-          rand2f(state->rngs[ij]), rand2f(state->rngs[ij]),
-          params.tentfilter);
-      // intersect next point
-      auto intersection = intersect_bvh(bvh, ray);
-      if (!intersection.hit) {
-        if (!params.envhidden) {
-          auto env = eval_environment(scene, ray.d);
-          assert(isfinite(env));
-          state->accumulation[ij] += {env.x, env.y, env.z, 1.0f};
+  parallel_for(state->render.width(), state->render.height(),
+      [&] (int i, int j) {
+        vec2i ij = vec2i{i, j};
+        // trace_sample
+        auto ray = sample_camera(camera, ij, state->render.imsize(),
+            rand2f(state->rngs[ij]), rand2f(state->rngs[ij]),
+            params.tentfilter);
+        // intersect next point
+        auto intersection = intersect_bvh(bvh, ray);
+        if (!intersection.hit) {
+          if (!params.envhidden) {
+            auto env = eval_environment(scene, ray.d);
+            assert(isfinite(env));
+            state->accumulation[ij] += {env.x, env.y, env.z, 1.0f};
+          }
+          return;
         }
-        continue;
-      }
-      // prepare shading point
-      auto point    = make_shading_point(intersection, -ray.d, scene);
-      // accumulate emission
-      auto emission = eval_emission(point.emission, point.normal,
-                                    point.outgoing);
-      assert(isfinite(emission));
-      state->accumulation[ij] +=
-          {emission.x, emission.y, emission.z, 1.0f};
-      // handle delta
-      if (is_delta(point.bsdf)) { continue; }
-      // initial candidate
-      restir_reservoir& r = state->reservoirs[ij];
-      r = make_reservoir(
-          params.restir_vis, point, scene, lights, state->rngs[ij],
-          params.restir_candidates, bvh);
-      if (!is_point_visible(point.position, r.lpoint.position, scene, bvh)) {
-        r.weight = 0.0f;
-      }
-    }
-  }
+        // prepare shading point
+        auto point    = make_shading_point(intersection, -ray.d, scene);
+        // accumulate emission
+        auto emission = eval_emission(point.emission, point.normal,
+                                      point.outgoing);
+        assert(isfinite(emission));
+        state->accumulation[ij] +=
+            {emission.x, emission.y, emission.z, 1.0f};
+        // handle delta
+        if (is_delta(point.bsdf)) { return; }
+        // initial candidate
+        restir_reservoir& r = state->reservoirs[ij];
+        r = make_reservoir(
+            params.restir_vis, point, scene, lights, state->rngs[ij],
+            params.restir_candidates, bvh);
+        if (!is_point_visible(point.position, r.lpoint.position, scene, bvh)) {
+          r.weight = 0.0f;
+        }
+      });
 
   // # spatial reuse
-  for (auto j = 0; j < state->render.height(); j++) {
-    for (auto i = 0; i < state->render.width(); i++) {
-      auto ij = vec2i{i, j};
-      // pick reservoirs
-      std::vector<restir_reservoir*> reservoirs;
-      reservoirs.reserve(6);
-      restir_reservoir* curr_res = &state->reservoirs[ij];
-      reservoirs.push_back(curr_res);
-      pick_spatial_neighbours(state, ij, reservoirs);
-      // combine reservoirs
-      state->tmp[ij] = combine_reservoirs(
-          params.restir_vis, params.restir_unbias, curr_res->point,
-          reservoirs, state->rngs[ij], scene, bvh);
-    }
-  }
+  parallel_for(state->render.width(), state->render.height(),
+      [&](int i, int j) {
+        auto ij = vec2i{i, j};
+        // pick reservoirs
+        std::vector<restir_reservoir*> reservoirs;
+        reservoirs.reserve(6);
+        restir_reservoir* curr_res = &state->reservoirs[ij];
+        reservoirs.push_back(curr_res);
+        pick_spatial_neighbours(state, ij, reservoirs);
+        // combine reservoirs
+        state->tmp[ij] = combine_reservoirs(
+            params.restir_vis, params.restir_unbias, curr_res->point,
+            reservoirs, state->rngs[ij], scene, bvh);
+      });
   std::swap(state->tmp, state->reservoirs);
 
   // # shade
-  for (auto j = 0; j < state->render.height(); j++) {
-    for (auto i = 0; i < state->render.width(); i++) {
-      auto ij = vec2i{i, j};
-        auto& reservoir = state->reservoirs[ij];
-      if (reservoir.weight > 0.0f &&
-          is_point_visible(reservoir.point.position,
-                           reservoir.lpoint.position, scene, bvh)) {
-        auto incoming = normalize(
-            reservoir.lpoint.position - reservoir.point.position);
-        auto radiance = shade_point(
-            reservoir.point, reservoir, reservoir.point.outgoing, incoming);
-        assert(isfinite(radiance));
-        state->accumulation[ij] += 
-              {radiance.x, radiance.y, radiance.z, 1.0f};
-      }
-      state->samples[ij] += 1;
-      state->render[ij] = state->accumulation[ij] / state->samples[ij];
-    }
-  }
+  parallel_for(state->render.width(), state->render.height(),
+      [&](int i, int j) {
+        auto ij = vec2i{i, j};
+          auto& reservoir = state->reservoirs[ij];
+        if (reservoir.weight > 0.0f &&
+            is_point_visible(reservoir.point.position,
+                             reservoir.lpoint.position, scene, bvh)) {
+          auto incoming = normalize(
+              reservoir.lpoint.position - reservoir.point.position);
+          auto radiance = shade_point(
+              reservoir.point, reservoir, reservoir.point.outgoing, incoming);
+          assert(isfinite(radiance));
+          state->accumulation[ij] += 
+                {radiance.x, radiance.y, radiance.z, 1.0f};
+        }
+        state->samples[ij] += 1;
+        state->render[ij] = state->accumulation[ij] / state->samples[ij];
+      });
 }
