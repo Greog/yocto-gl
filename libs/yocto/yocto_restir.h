@@ -316,6 +316,8 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     if (!is_point_visible(point.position, curr_res.lpoint.position, scene, bvh)) {
       curr_res.weight = 0.0f;
     }
+    prev_res.num_candidates =
+        min(prev_res.num_candidates, 20 * params.restir_candidates);
     std::vector<restir_reservoir*> reservoirs;
     reservoirs.reserve(2);
     reservoirs.push_back(&curr_res);
