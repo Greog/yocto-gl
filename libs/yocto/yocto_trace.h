@@ -506,14 +506,14 @@ struct restir_reservoir {
 
 // [experimental] Asynchronous state
 struct trace_state {
-  image<vec4f>            render       = {};
-  image<vec4f>            accumulation = {};
-  image<int>              samples      = {};
-  image<rng_state>        rngs         = {};
-  image<restir_reservoir> reservoirs   = {};
-  image<restir_reservoir> tmp          = {};
-  future<void>            worker       = {};  // async
-  atomic<bool>            stop         = {};  // async
+  image<vec4f>            render          = {};
+  image<vec4f>            accumulation    = {};
+  image<int>              samples         = {};
+  image<rng_state>        rngs            = {};
+  image<restir_reservoir> reservoirs      = {};
+  image<restir_reservoir> prev_reservoirs = {};
+  future<void>            worker          = {};  // async
+  atomic<bool>            stop            = {};  // async
 };
 
 // [experimental] Callback used to report partially computed image

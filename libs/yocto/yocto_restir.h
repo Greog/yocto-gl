@@ -1,5 +1,14 @@
 #include <assert.h>
 
+static vec4f fix_radiance(const vec3f& radiance, const trace_params& params) {
+  if (!isfinite(radiance)) { return {0.0f, 0.0f, 0.0f, 1.0f}; }
+  if (max(radiance) > params.clamp) {
+    vec3f tmp = radiance * (params.clamp / max(radiance));
+    return {tmp.x, tmp.y, tmp.z, 1.0f};
+  }
+  return {radiance.x, radiance.y, radiance.z, 1.0f};
+}
+
 static shading_point make_shading_point(const bvh_intersection& intersection,
     const vec3f& outgoing, const trace_scene* scene) {
   auto instance  = scene->instances[intersection.instance];
@@ -167,7 +176,7 @@ static restir_reservoir combine_reservoirs(
   else {
     float Z = 0.0f;
     for (int i = 0; i < reservoirs.size(); i++) {
-      auto& r         = reservoirs[i];
+      restir_reservoir* r = reservoirs[i];
       float p_hat_q_i = eval_p_hat_q(r->point, res.lpoint, scene, bvh);
       if (p_hat_q_i > 0.0f) {
         Z += r->num_candidates;
@@ -185,8 +194,8 @@ static restir_reservoir combine_reservoirs(
 }
 
 void pick_spatial_neighbours(trace_state* state, const vec2i& ij_base,
-                             std::vector<restir_reservoir*>& neighbours) {
-  int radius       = 10;
+                             std::vector<restir_reservoir*>& reservoirs) {
+  int radius       = 30;
   vec2i image_size = state->render.imsize();
   rng_state& rng   = state->rngs[ij_base];
 
@@ -196,6 +205,8 @@ void pick_spatial_neighbours(trace_state* state, const vec2i& ij_base,
     if (ij.x < 0 || ij.y < 0 || ij.x >= image_size.x || ij.y >= image_size.y) {
       continue;
     }
+    restir_reservoir* r = &state->reservoirs[ij];
+    reservoirs.push_back(r);
   }
 }
 
@@ -318,10 +329,7 @@ static vec3f trace_restir(const trace_scene* scene, const trace_bvh* bvh,
     }
     prev_res.num_candidates =
         min(prev_res.num_candidates, 20 * params.restir_candidates);
-    std::vector<restir_reservoir*> reservoirs;
-    reservoirs.reserve(2);
-    reservoirs.push_back(&curr_res);
-    reservoirs.push_back(&prev_res);
+    std::vector<restir_reservoir*> reservoirs = {&curr_res, &prev_res};
     reservoir = combine_reservoirs(
         params.restir_vis, params.restir_unbias, point, reservoirs, rng,
         scene, bvh);
@@ -353,78 +361,103 @@ static void trace_restir_spatial(
     trace_state* state, const trace_scene* scene, const trace_camera* camera,
     const trace_bvh* bvh, const trace_lights* lights,
     const trace_params& params) {
+
   // # initial candidates
   parallel_for(state->render.width(), state->render.height(),
       [&] (int i, int j) {
+        // initialize
         vec2i ij = vec2i{i, j};
+
         // trace_sample
         auto ray = sample_camera(camera, ij, state->render.imsize(),
             rand2f(state->rngs[ij]), rand2f(state->rngs[ij]),
             params.tentfilter);
+
         // intersect next point
         auto intersection = intersect_bvh(bvh, ray);
         if (!intersection.hit) {
           if (!params.envhidden) {
             auto env = eval_environment(scene, ray.d);
-            assert(isfinite(env));
-            state->accumulation[ij] += {env.x, env.y, env.z, 1.0f};
+            state->accumulation[ij] += fix_radiance(env, params);
           }
           return;
         }
+
         // prepare shading point
         auto point    = make_shading_point(intersection, -ray.d, scene);
+
         // accumulate emission
         auto emission = eval_emission(point.emission, point.normal,
                                       point.outgoing);
-        assert(isfinite(emission));
-        state->accumulation[ij] +=
-            {emission.x, emission.y, emission.z, 1.0f};
+        state->accumulation[ij] += fix_radiance(emission, params);
+        state->render[ij] = fix_radiance(emission, params);
+
         // handle delta
         if (is_delta(point.bsdf)) { return; }
+
         // initial candidate
         restir_reservoir& r = state->reservoirs[ij];
         r = make_reservoir(
             params.restir_vis, point, scene, lights, state->rngs[ij],
             params.restir_candidates, bvh);
-        if (!is_point_visible(point.position, r.lpoint.position, scene, bvh)) {
-          r.weight = 0.0f;
-        }
+        // @VIS
+        // if (!is_point_visible(point.position, r.lpoint.position, scene, bvh)) {
+        //   r.weight = 0.0f;
+        // }
       });
+
+  // # temporal reuse
+  // parallel_for(state->render.width(), state->render.height(),
+  //     [&](int i, int j) {
+  //       auto ij = vec2i{i, j};
+  //       restir_reservoir curr_res = state->reservoirs[ij];
+  //       restir_reservoir prev_res = state->prev_reservoirs[ij];
+  //       prev_res.num_candidates =
+  //           min(prev_res.num_candidates, 20 * params.restir_candidates);
+  //       std::vector<restir_reservoir*> reservoirs = {&curr_res, &prev_res};
+  //       state->reservoirs[ij] = combine_reservoirs(
+  //           params.restir_vis, params.restir_unbias, curr_res.point,
+  //           reservoirs, state->rngs[ij], scene, bvh);
+  //     });
 
   // # spatial reuse
   parallel_for(state->render.width(), state->render.height(),
       [&](int i, int j) {
         auto ij = vec2i{i, j};
-        // pick reservoirs
         std::vector<restir_reservoir*> reservoirs;
-        reservoirs.reserve(6);
-        restir_reservoir* curr_res = &state->reservoirs[ij];
-        reservoirs.push_back(curr_res);
+        restir_reservoir* r = &state->reservoirs[ij];
+        reservoirs.push_back(r);
         pick_spatial_neighbours(state, ij, reservoirs);
-        // combine reservoirs
-        state->tmp[ij] = combine_reservoirs(
-            params.restir_vis, params.restir_unbias, curr_res->point,
+        state->prev_reservoirs[ij] = combine_reservoirs(
+            params.restir_vis, params.restir_unbias, r->point,
             reservoirs, state->rngs[ij], scene, bvh);
       });
-  std::swap(state->tmp, state->reservoirs);
+  std::swap(state->prev_reservoirs, state->reservoirs);
 
   // # shade
   parallel_for(state->render.width(), state->render.height(),
       [&](int i, int j) {
+        // initialize
         auto ij = vec2i{i, j};
-          auto& reservoir = state->reservoirs[ij];
+        auto& reservoir = state->reservoirs[ij];
+        assert(isfinite(reservoir.weight));
+
+        // check reservoir and visibility
         if (reservoir.weight > 0.0f &&
             is_point_visible(reservoir.point.position,
                              reservoir.lpoint.position, scene, bvh)) {
+          // accumulate radiance
           auto incoming = normalize(
               reservoir.lpoint.position - reservoir.point.position);
           auto radiance = shade_point(
               reservoir.point, reservoir, reservoir.point.outgoing, incoming);
-          assert(isfinite(radiance));
-          state->accumulation[ij] += 
-                {radiance.x, radiance.y, radiance.z, 1.0f};
+          state->accumulation[ij] += fix_radiance(radiance, params);
+          // @NOACC: uncomment this line
+          // state->render[ij] = fix_radiance(radiance, params);
         }
+        // @NOACC: comment these lines
         state->samples[ij] += 1;
         state->render[ij] = state->accumulation[ij] / state->samples[ij];
       });
+  std::swap(state->prev_reservoirs, state->reservoirs);
 }

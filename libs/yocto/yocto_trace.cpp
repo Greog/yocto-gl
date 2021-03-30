@@ -1745,6 +1745,7 @@ void trace_sample(trace_state* state, const trace_scene* scene,
   if (params.sampler == trace_sampler_type::restir) {
     auto s = trace_restir(scene, bvh, lights, ray, ij, state, params);
     sample = {s.x, s.y, s.z, 1.0f};
+    // @NOACC: uncomment these lines
     // if (!isfinite(xyz(sample))) sample = {0, 0, 0, sample.w};
     // if (max(sample) > params.clamp)
     //   sample = sample * (params.clamp / max(sample));
@@ -1778,12 +1779,12 @@ void init_state(trace_state* state, const trace_scene* scene,
   state->accumulation.assign(image_size, zero4f);
   state->samples.assign(image_size, 0);
   state->rngs.assign(image_size, {});
-  state->tmp.assign(image_size, {});
   auto rng_ = make_rng(1301081);
   for (auto& rng : state->rngs) {
     rng = make_rng(params.seed, rand1i(rng_, 1 << 31) / 2 + 1);
   }
   state->reservoirs.assign(image_size, {});
+  state->prev_reservoirs.assign(image_size, {});
 }
 
 // Forward declaration
