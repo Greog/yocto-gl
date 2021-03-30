@@ -407,18 +407,18 @@ static void trace_restir_spatial(
       });
 
   // # temporal reuse
-  // parallel_for(state->render.width(), state->render.height(),
-  //     [&](int i, int j) {
-  //       auto ij = vec2i{i, j};
-  //       restir_reservoir curr_res = state->reservoirs[ij];
-  //       restir_reservoir prev_res = state->prev_reservoirs[ij];
-  //       prev_res.num_candidates =
-  //           min(prev_res.num_candidates, 20 * params.restir_candidates);
-  //       std::vector<restir_reservoir*> reservoirs = {&curr_res, &prev_res};
-  //       state->reservoirs[ij] = combine_reservoirs(
-  //           params.restir_vis, params.restir_unbias, curr_res.point,
-  //           reservoirs, state->rngs[ij], scene, bvh);
-  //     });
+  parallel_for(state->render.width(), state->render.height(),
+      [&](int i, int j) {
+        auto ij = vec2i{i, j};
+        restir_reservoir curr_res = state->reservoirs[ij];
+        restir_reservoir prev_res = state->prev_reservoirs[ij];
+        prev_res.num_candidates =
+            min(prev_res.num_candidates, 20 * params.restir_candidates);
+        std::vector<restir_reservoir*> reservoirs = {&curr_res, &prev_res};
+        state->reservoirs[ij] = combine_reservoirs(
+            params.restir_vis, params.restir_unbias, curr_res.point,
+            reservoirs, state->rngs[ij], scene, bvh);
+      });
 
   // # spatial reuse
   parallel_for(state->render.width(), state->render.height(),
